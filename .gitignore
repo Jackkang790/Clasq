@@ -1,8 +1,19 @@
-.my_test_venv/
-.vscode/*
+# Created by https://www.toptal.com/developers/gitignore/api/visualstudiocode,python,jupyternotebooks
+# Edit at https://www.toptal.com/developers/gitignore?templates=visualstudiocode,python,jupyternotebooks
 
-# Created by https://www.toptal.com/developers/gitignore/api/python
-# Edit at https://www.toptal.com/developers/gitignore?templates=python
+### JupyterNotebooks ###
+# gitignore template for Jupyter Notebooks
+# website: http://jupyter.org/
+
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# IPython
+profile_default/
+ipython_config.py
+
+# Remove previous ipynb_checkpoints
+#   git rm -r .ipynb_checkpoints/
 
 ### Python ###
 # Byte-compiled / optimized / DLL files
@@ -83,11 +94,8 @@ docs/_build/
 target/
 
 # Jupyter Notebook
-.ipynb_checkpoints
 
 # IPython
-profile_default/
-ipython_config.py
 
 # pyenv
 #   For a library or package, you might want to ignore these files since the code is
@@ -176,4 +184,23 @@ poetry.toml
 # LSP config files
 pyrightconfig.json
 
-# End of https://www.toptal.com/developers/gitignore/api/python
+### VisualStudioCode ###
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/*.code-snippets
+
+# Local History for Visual Studio Code
+.history/
+
+# Built Visual Studio Code Extensions
+*.vsix
+
+### VisualStudioCode Patch ###
+# Ignore all local history of files
+.history
+.ionide
+
+# End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,python,jupyternotebooks
