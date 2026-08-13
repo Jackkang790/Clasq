@@ -1,0 +1,10 @@
+{
+    "preset_name": "사진",
+    "folders": [
+        {
+            "checked": true,
+            "name": "사진",
+            "path": "C:/사진"
+        }
+    ]
+}

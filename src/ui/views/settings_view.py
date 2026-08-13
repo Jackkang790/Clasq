@@ -1,8 +1,9 @@
 import os
+import json
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, 
     QGroupBox, QPushButton, QLabel, QTableWidget, 
-    QTableWidgetItem, QCheckBox, QHeaderView, QAbstractItemView
+    QTableWidgetItem, QCheckBox, QHeaderView, QAbstractItemView, QLineEdit
 )
 from PySide6.QtCore import Qt, Property, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QIcon, QPainter, QColor
@@ -229,7 +230,7 @@ class SettingsView(QWidget):
             QCheckBox::indicator:checked {
                 background-color: #4F84E8;
                 border: 1px solid #4F84E8;
-                image: url(C:/vscode/orbit/orbit_view-main/assets/icons/check.svg);
+                image: url(assets/styles/icons/check.svg);
             }
 
             QTableWidget QWidget {
@@ -255,6 +256,7 @@ class SettingsView(QWidget):
 
         option = QGroupBox('')          # 버튼 그룹
         optionlayout = QHBoxLayout()    # 버튼 배치용 레이아웃
+        option_main_layout = QVBoxLayout()#프리셋 이름지정용 레이아웃
 
         middlelayout = QHBoxLayout()    # 중간 영역
 
@@ -267,7 +269,7 @@ class SettingsView(QWidget):
         # 상단요소
         
         backbtn = QPushButton()
-        icon_path = os.path.join("orbit_view-main","assets", "icons", "home.svg")
+        icon_path = os.path.join("assets", "styles","icons", "home.svg")
         backbtn.setIcon(QIcon(icon_path))
         backbtn.setIconSize(QSize(24, 24))
         backbtn.setObjectName("backbtn")
@@ -279,8 +281,34 @@ class SettingsView(QWidget):
         # 중간영역 버튼들
         savebtn = QPushButton('프리셋 저장하기')
         savebtn.setObjectName("savebtn")
+        savebtn.clicked.connect(self.save_preset)
+        # 프리셋 이름 입력 영역
+        self.preset_input_widget = QWidget()
+        preset_input_layout = QHBoxLayout(self.preset_input_widget)
+
+        self.preset_name_input = QLineEdit()
+        self.preset_name_input.setPlaceholderText("프리셋 이름을 입력하세요")
+
+        preset_save_btn = QPushButton("저장")
+        preset_save_btn.setObjectName("presetSaveBtn")
+
+        preset_cancel_btn = QPushButton("취소")
+        preset_cancel_btn.setObjectName("presetCancelBtn")
+
+        preset_input_layout.addWidget(self.preset_name_input)
+        preset_input_layout.addWidget(preset_save_btn)
+        preset_input_layout.addWidget(preset_cancel_btn)
+
+        # 처음에는 숨김
+        self.preset_input_widget.hide()
+
+        # 버튼 연결
+        savebtn.clicked.connect(self.show_preset_input)
+        preset_save_btn.clicked.connect(self.save_preset)
+        preset_cancel_btn.clicked.connect(self.hide_preset_input)
         reloadbtn = QPushButton('프리셋 불러오기')
         reloadbtn.setObjectName("reloadbtn")
+        reloadbtn.clicked.connect(self.load_preset)
         togleName = QLabel('자동')
         toggle = ToggleSwitch()
         
@@ -344,7 +372,10 @@ class SettingsView(QWidget):
         optionlayout.addWidget(toggle)
         optionlayout.addWidget(clearbtn)
 
-        option.setLayout(optionlayout)
+        option_main_layout.addLayout(optionlayout)
+        option_main_layout.addWidget(self.preset_input_widget)
+
+        option.setLayout(option_main_layout)
 
         # 테이블 배치
         btnlayout.addStretch()
@@ -362,9 +393,156 @@ class SettingsView(QWidget):
         # 메인 레이아웃 적용
         self.setLayout(mainLayout)
 
+    def show_preset_input(self):
+        # 이미 입력창이 열려 있고
+        # 입력값이 비어 있다면 닫기
+        if self.preset_input_widget.isVisible():
+
+            if not self.preset_name_input.text().strip():
+                self.hide_preset_input()
+                return
+            
+        self.preset_input_widget.show()
+        self.preset_name_input.setFocus()
+    def hide_preset_input(self):
+        self.preset_name_input.clear()
+        self.preset_input_widget.hide()
+    # 프리셋 저장 함수
+    def save_preset(self):
+
+        # 입력창에서 프리셋 이름 가져오기
+        preset_name = self.preset_name_input.text().strip()
+
+        # 이름을 입력하지 않았다면 저장하지 않음
+        if not preset_name:
+            return
+
+        # JSON으로 저장할 데이터
+        preset = {
+            "preset_name": preset_name,
+            "folders": []
+        }
+
+        # 테이블의 모든 행 가져오기
+        for row in range(self.table.rowCount()):
+
+            # 체크 상태
+            widget = self.table.cellWidget(row, 0)
+            checked = False
+
+            if widget:
+                checkbox = widget.findChild(QCheckBox)
+
+                if checkbox:
+                    checked = checkbox.isChecked()
+
+            # 폴더 이름
+            name_item = self.table.item(row, 2)
+            folder_name = name_item.text() if name_item else ""
+
+            # 폴더 경로
+            path_item = self.table.item(row, 3)
+            folder_path = path_item.text() if path_item else ""
+
+            # JSON에 추가
+            preset["folders"].append({
+                "checked": checked,
+                "name": folder_name,
+                "path": folder_path
+            })
+
+        # JSON 파일 저장 위치
+        file_path = os.path.join(
+            os.getcwd(),
+            "preset.json"
+        )
+
+        # JSON 파일 저장
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(
+                preset,
+                f,
+                ensure_ascii=False,
+                indent=4
+            )
+
+        print(f"프리셋 '{preset_name}' 저장 완료")
+
+        # 입력창 닫기
+        self.hide_preset_input()
+    # 프리셋 불러오기 함수
+    def load_preset(self):
+
+        file_path = os.path.join(
+            os.getcwd(),
+            "preset.json"
+        )
+
+        # JSON 파일이 없는 경우
+        if not os.path.exists(file_path):
+            print("저장된 프리셋이 없습니다.")
+            return
+
+        # JSON 읽기
+        with open(file_path, "r", encoding="utf-8") as f:
+            preset = json.load(f)
+
+        # 기존 테이블 삭제
+        self.table.setRowCount(0)
+
+        # JSON의 폴더 정보 가져오기
+        for folder in preset.get("folders", []):
+
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+
+            # 체크박스
+            checkbox = QCheckBox()
+
+            widget = QWidget()
+            layout = QHBoxLayout(widget)
+
+            layout.addWidget(checkbox)
+            layout.setAlignment(Qt.AlignCenter)
+            layout.setContentsMargins(0, 0, 0, 0)
+
+            self.table.setCellWidget(row, 0, widget)
+
+            # 저장했던 체크 상태
+            checkbox.setChecked(
+                folder.get("checked", False)
+            )
+
+            # 번호
+            numItem = QTableWidgetItem(str(row + 1))
+            numItem.setTextAlignment(Qt.AlignCenter)
+            self.table.setItem(row, 1, numItem)
+
+            # 폴더 이름
+            self.table.setItem(
+                row,
+                2,
+                QTableWidgetItem(
+                    folder.get("name", "")
+                )
+            )
+
+            # 폴더 경로
+            self.table.setItem(
+                row,
+                3,
+                QTableWidgetItem(
+                    folder.get("path", "")
+                )
+            )
+
+        print(
+            f"프리셋 '{preset.get('preset_name', '')}' 불러오기 완료"
+        )
+    #메인화면으로 이동 함수
     def go_search(self):
         self.stacked_widget.setCurrentIndex(1)
-
+    #파일탐색기 오픈, 폴더 선택 후 테이블에 추가
     def add_folder(self):
         folder_path = QFileDialog.getExistingDirectory(
             self,
