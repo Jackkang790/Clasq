@@ -33,10 +33,11 @@ class CheckBoxHeader(QHeaderView):
                 16
             )
 
-            if self.checked:
-                option.state = QStyle.State_On
-            else:
-                option.state = QStyle.State_Off
+            option.state = (
+                QStyle.State_On
+                if self.checked
+                else QStyle.State_Off
+            )
 
             self.style().drawControl(
                 QStyle.CE_CheckBox,
@@ -55,16 +56,6 @@ class CheckBoxHeader(QHeaderView):
 
             self.viewport().update()
 
-        else:
-            super().mousePressEvent(event)
-
-    def mousePressEvent(self, event):
-        index = self.logicalIndexAt(event.pos())
-
-        if index == 0:
-            self.checked = not self.checked
-            self.parent().toggle_all(self.checked)
-            self.viewport().update()
         else:
             super().mousePressEvent(event)
 class ToggleSwitch(QWidget):
@@ -251,11 +242,11 @@ class SettingsView(QWidget):
         for row in range(self.table.rowCount()):
             widget = self.table.cellWidget(row, 0)
 
-        if widget:
-            checkbox = widget.findChild(QCheckBox)
+            if widget:
+                checkbox = widget.findChild(QCheckBox)
 
-            if checkbox:
-                checkbox.setChecked(checked)
+                if checkbox:
+                    checkbox.setChecked(checked)
     
     def init_layout(self):
         # 영역나누기
@@ -308,7 +299,12 @@ class SettingsView(QWidget):
         self.table.verticalHeader().setVisible(False)
         self.table.setSelectionMode(QAbstractItemView.NoSelection)
 
-        tableheader = CheckBoxHeader(Qt.Horizontal, self.table)
+        tableheader = CheckBoxHeader(
+            Qt.Horizontal,
+            self.table,
+            self
+        )
+
         self.table.setHorizontalHeader(tableheader)
         
         # for row in range(3):

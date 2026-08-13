@@ -42,7 +42,9 @@ class MainWindow(QMainWindow):
         # Index 1: 검색
         # Index 2: 정리
         # Index 3: 저장목록
-        self.stacked_widget.addWidget(SettingsView())
+        self.stacked_widget.addWidget(
+        SettingsView(self.stacked_widget)
+        )
         self.stacked_widget.addWidget(SearchView())
         self.stacked_widget.addWidget(OrganizeView())
         self.stacked_widget.addWidget(SavedView())
