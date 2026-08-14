@@ -1,76 +1,334 @@
-from PySide6.QtCore import Qt
+"""
+src/ui/views/organize_view.py
+
+'정리하기' 화면.
+MainWindow의 QStackedWidget에 addWidget(OrganizeView())로 바로 꽂아서 씁니다.
+
+내부적으로 자체 QStackedWidget을 하나 더 가지고 있어서,
+  - sub-index 0: 파일 목록 테이블 뷰 (초기 화면)
+  - sub-index 1: 자동 그룹화 결과 뷰
+두 화면을 오갑니다. (전역 light.qss가 있으면 그걸 우선 따르고,
+이 파일의 스타일은 objectName 기반 최소한의 폴백 스타일만 넣었습니다.)
+"""
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import (
-    QGroupBox,
-    QHBoxLayout,
-    QHeaderView,
-    QLabel,
-    QPushButton,
-    QTableWidget,
-    QTableWidgetItem,
-    QVBoxLayout,
-    QWidget,
+    QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
+    QTableWidget, QTableWidgetItem, QHeaderView, QFrame,
+    QStackedWidget, QScrollArea, QAbstractItemView, QFileDialog,
+    QMessageBox,
 )
 
+ICON_GLYPH = {"txt": "📄", "image": "🖼️", "doc": "📄", "default": "📁"}
 
-class OrganizeView(QWidget):
+FALLBACK_QSS = """
+QLabel#breadcrumb { color: #8A8CA5; font-size: 12px; }
+QLabel#screenTitle { font-size: 20px; font-weight: 800; }
+QFrame#infoBanner { background-color: #F1EFFF; border: 1px solid #DCD6FF; border-radius: 8px; }
+QLabel#infoBannerText { color: #5A4BD1; font-size: 12px; font-weight: 500; }
+QPushButton#primaryBtn {
+    background-color: #6C5CE7; color: white; border: none;
+    border-radius: 8px; padding: 6px 18px; font-weight: 600; font-size: 13px;
+}
+QPushButton#primaryBtn:hover { background-color: #5A4BD1; }
+QPushButton#secondaryBtn {
+    background-color: white; color: #2D2D3A; border: 1px solid #E4E6EF;
+    border-radius: 8px; padding: 6px 18px; font-size: 13px;
+}
+QPushButton#secondaryBtn:hover { background-color: #F0F0F7; }
+QTableWidget#fileTable {
+    background-color: white; border: 1px solid #E4E6EF; border-radius: 10px;
+    gridline-color: #E4E6EF; font-size: 13px; color: #2D2D3A;
+    alternate-background-color: #F9F9FC;
+    selection-background-color: #EFEBFF;
+    selection-color: #2D2D3A;
+    outline: 0;
+}
+QTableWidget#fileTable::item { padding: 6px; color: #2D2D3A; }
+QTableWidget#fileTable::item:selected {
+    background-color: #EFEBFF; color: #2D2D3A;
+}
+QTableWidget#fileTable QHeaderView::section {
+    background-color: #F5F6FA; color: #8A8CA5; padding: 8px;
+    border: none; border-bottom: 1px solid #E4E6EF; font-weight: 600;
+}
+QFrame#groupCard { background-color: #F5F6FA; border: 1px solid #E4E6EF; border-radius: 12px; }
+QLabel#groupTitle { font-size: 14px; font-weight: 700; }
+QLabel#groupCount { font-size: 11px; color: #8A8CA5; }
+QFrame#fileIconCard { background-color: white; border: 1px solid #E4E6EF; border-radius: 10px; }
+QLabel#fileIconGlyph { font-size: 22px; }
+QLabel#fileIconLabel { font-size: 10px; color: #8A8CA5; }
+"""
+
+
+# ---------------------------------------------------------------------------
+# 공용 작은 위젯들
+# ---------------------------------------------------------------------------
+class _InfoBanner(QFrame):
+    def __init__(self, text, parent=None):
+        super().__init__(parent)
+        self.setObjectName("infoBanner")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(14, 8, 14, 8)
+        label = QLabel(text)
+        label.setObjectName("infoBannerText")
+        lay.addWidget(label)
+        lay.addStretch()
+
+
+class _FileIconCard(QFrame):
+    def __init__(self, kind="default", label="", parent=None):
+        super().__init__(parent)
+        self.setObjectName("fileIconCard")
+        self.setFixedSize(72, 78)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(4, 8, 4, 4)
+        lay.setSpacing(4)
+
+        glyph = QLabel(ICON_GLYPH.get(kind, ICON_GLYPH["default"]))
+        glyph.setObjectName("fileIconGlyph")
+        glyph.setAlignment(Qt.AlignCenter)
+        lay.addWidget(glyph)
+
+        text_lbl = QLabel(label)
+        text_lbl.setObjectName("fileIconLabel")
+        text_lbl.setAlignment(Qt.AlignCenter)
+        text_lbl.setWordWrap(True)
+        lay.addWidget(text_lbl)
+
+
+class _GroupedFolderCard(QFrame):
+    def __init__(self, folder_name, files, parent=None):
+        # files: list[tuple(kind, label)]
+        super().__init__(parent)
+        self.setObjectName("groupCard")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 14, 16, 16)
+        outer.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        folder_icon = QLabel("🗂")
+        title = QLabel(folder_name)
+        title.setObjectName("groupTitle")
+        title_row.addWidget(folder_icon)
+        title_row.addWidget(title)
+        title_row.addStretch()
+        count = QLabel(f"{len(files)}개 파일")
+        count.setObjectName("groupCount")
+        title_row.addWidget(count)
+        outer.addLayout(title_row)
+
+        icons_row = QHBoxLayout()
+        icons_row.setSpacing(10)
+        for kind, label in files:
+            icons_row.addWidget(_FileIconCard(kind, label))
+        icons_row.addStretch()
+        outer.addLayout(icons_row)
+
+
+def _make_btn(text, primary=False):
+    btn = QPushButton(text)
+    btn.setObjectName("primaryBtn" if primary else "secondaryBtn")
+    btn.setCursor(Qt.PointingHandCursor)
+    btn.setMinimumHeight(36)
+    return btn
+
+
+# ---------------------------------------------------------------------------
+# sub-screen 0: 파일 목록 테이블
+# ---------------------------------------------------------------------------
+class _FileTableScreen(QWidget):
+    autoOrganizeRequested = Signal()
+    addPathRequested = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.init_ui()
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(14)
 
-    def init_ui(self):
-        # 전체 메인 레이아웃 (오른쪽 메인 영역 역할)
-        main_layout = QVBoxLayout(self)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
+        breadcrumb = QLabel("메인화면 > 정리하기 ...")
+        breadcrumb.setObjectName("breadcrumb")
+        root.addWidget(breadcrumb)
 
-        # 1. 상단 안내문 (Ctrl + 1)
-        notice = QLabel("! Ctrl + 1을 누르면 백그라운드에서 실행됩니다")
-        notice.setObjectName("noticeLabel")
-        notice.setAlignment(Qt.AlignCenter)
-        main_layout.addWidget(notice)
+        root.addWidget(_InfoBanner("Ctrl + 1 을 누르면 백그라운드에서 실행됩니다"))
 
-        # 2. 화면 제목
+        header_row = QHBoxLayout()
         title = QLabel("파일 자동 정리")
-        title.setObjectName("titleLabel")
-        main_layout.addWidget(title)
+        title.setObjectName("screenTitle")
+        header_row.addWidget(title)
+        header_row.addStretch()
 
-        # 3. 상단 버튼 영역 (경로 추가 / 자동 정리)
-        button_layout = QHBoxLayout()
-        path_button = QPushButton("경로 추가하기")
-        auto_button = QPushButton("자동 정리하기")
+        add_path_btn = _make_btn("경로 추가하기")
+        add_path_btn.clicked.connect(self._on_add_path)
+        auto_btn = _make_btn("자동 정리하기", primary=True)
+        auto_btn.clicked.connect(self.autoOrganizeRequested.emit)
+        header_row.addWidget(add_path_btn)
+        header_row.addWidget(auto_btn)
+        root.addLayout(header_row)
 
-        path_button.setObjectName("pathButton")
-        auto_button.setObjectName("autoButton")
+        self.table = QTableWidget(0, 3)
+        self.table.setObjectName("fileTable")
+        self.table.setHorizontalHeaderLabels(["파일명", "태그", "파일 경로"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setAlternatingRowColors(True)
+        # 외부(app 전역) QSS에 테이블 선택색이 이미 정의돼 있어도 밀리지 않도록
+        # 팔레트를 직접 덮어써서 이중으로 고정한다.
+        palette = self.table.palette()
+        palette.setColor(QPalette.Highlight, QColor("#EFEBFF"))
+        palette.setColor(QPalette.HighlightedText, QColor("#2D2D3A"))
+        palette.setColor(QPalette.Inactive, QPalette.Highlight, QColor("#EFEBFF"))
+        palette.setColor(QPalette.Inactive, QPalette.HighlightedText, QColor("#2D2D3A"))
+        self.table.setPalette(palette)
+        root.addWidget(self.table, stretch=1)
 
-        button_layout.addWidget(path_button)
-        button_layout.addWidget(auto_button)
-        button_layout.addStretch()  # 버튼을 왼쪽에 정렬
-        main_layout.addLayout(button_layout)
+        self._load_mock_data()
 
-        # 4. 파일 및 태그 목록 테이블
-        table = QTableWidget()
-        table.setColumnCount(3)
-        table.setRowCount(3)
-        table.setHorizontalHeaderLabels(["파일명", "태그", "파일 경로"])
+    def _load_mock_data(self):
+        rows = [
+            ("보고서_최종.docx", "문서, 업무", "C:/Users/Downloads/보고서_최종.docx"),
+            ("스크린샷_0812.png", "이미지, 캡처", "C:/Users/Downloads/스크린샷_0812.png"),
+            ("회의록.txt", "문서, 메모", "C:/Users/Downloads/회의록.txt"),
+        ]
+        self.set_rows(rows)
 
-        # 임시 데이터 채우기 및 중앙 정렬
-        for row in range(3):
-            file_item = QTableWidgetItem(f"파일명_{row + 1}")
-            tag_item = QTableWidgetItem("태그")
-            path_item = QTableWidgetItem("파일 경로")
+    def set_rows(self, rows):
+        """rows: list[tuple(파일명, 태그, 파일경로)] - REQ-004 파일 목록 표시"""
+        self.table.setRowCount(0)
+        for r, (name, tag, path) in enumerate(rows):
+            self.table.insertRow(r)
+            self.table.setItem(r, 0, QTableWidgetItem(name))
+            self.table.setItem(r, 1, QTableWidgetItem(tag))
+            self.table.setItem(r, 2, QTableWidgetItem(path))
 
-            file_item.setTextAlignment(Qt.AlignCenter)
-            tag_item.setTextAlignment(Qt.AlignCenter)
-            path_item.setTextAlignment(Qt.AlignCenter)
+    def _on_add_path(self):
+        path = QFileDialog.getExistingDirectory(self, "정리할 폴더 선택")
+        if path:
+            self.addPathRequested.emit(path)
 
-            table.setItem(row, 0, file_item)
-            table.setItem(row, 1, tag_item)
-            table.setItem(row, 2, path_item)
 
-        # 테이블 헤더 컬럼 너비 자동 조절
-        header = table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.Stretch)
+# ---------------------------------------------------------------------------
+# sub-screen 1: 자동 그룹화 결과
+# ---------------------------------------------------------------------------
+class _GroupedScreen(QWidget):
+    organizeConfirmed = Signal()
+    editRequested = Signal()
 
-        # 테이블을 남아있는 공간에 크게 배치
-        main_layout.addWidget(table, 1)
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        root = QVBoxLayout(self)
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(14)
+
+        breadcrumb = QLabel("메인화면 > 정리하기 > 자동그룹화 ...")
+        breadcrumb.setObjectName("breadcrumb")
+        root.addWidget(breadcrumb)
+
+        root.addWidget(_InfoBanner("AI 분석 완료 - 생성된 최적의 파일 정리 계획입니다"))
+
+        header_row = QHBoxLayout()
+        title = QLabel("파일 자동 정리")
+        title.setObjectName("screenTitle")
+        header_row.addWidget(title)
+        header_row.addStretch()
+        header_row.addWidget(_make_btn("경로 추가하기"))
+        header_row.addWidget(_make_btn("자동 정리하기", primary=True))
+        root.addLayout(header_row)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        self.group_container = QWidget()
+        self.group_layout = QVBoxLayout(self.group_container)
+        self.group_layout.setSpacing(12)
+        self.group_layout.setContentsMargins(0, 0, 0, 0)
+        self.group_layout.addStretch()
+        scroll.setWidget(self.group_container)
+        root.addWidget(scroll, stretch=1)
+
+        self._load_mock_groups()
+
+        bottom_row = QHBoxLayout()
+        bottom_row.addStretch()
+        edit_btn = _make_btn("수정하기")
+        edit_btn.clicked.connect(self.editRequested.emit)
+        confirm_btn = _make_btn("이대로 정리하기", primary=True)
+        confirm_btn.clicked.connect(self.organizeConfirmed.emit)
+        bottom_row.addWidget(edit_btn)
+        bottom_row.addWidget(confirm_btn)
+        root.addLayout(bottom_row)
+
+    def _load_mock_groups(self):
+        groups = [
+            ("문서 폴더", [("txt", "회의록.txt"), ("doc", "보고서.docx")]),
+            ("이미지 폴더", [("image", "스크린샷_0812.png"), ("image", "사진1.jpg"), ("image", "사진2.jpg")]),
+        ]
+        self.set_groups(groups)
+
+    def set_groups(self, groups):
+        """groups: list[tuple(폴더명, list[tuple(kind, label)])] - REQ-010 그룹화 결과 표시"""
+        while self.group_layout.count() > 1:
+            item = self.group_layout.takeAt(0)
+            w = item.widget()
+            if w:
+                w.deleteLater()
+        for name, files in groups:
+            self.group_layout.insertWidget(self.group_layout.count() - 1, _GroupedFolderCard(name, files))
+
+
+# ---------------------------------------------------------------------------
+# 외부에 노출되는 진짜 뷰: OrganizeView
+# ---------------------------------------------------------------------------
+class OrganizeView(QWidget):
+    """
+    MainWindow의 stacked_widget(index 2)에 들어가는 '정리하기' 화면.
+    내부적으로 테이블 뷰 <-> 자동 그룹화 뷰를 전환한다.
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("organizeView")
+        self.setStyleSheet(FALLBACK_QSS)  # 전역 light.qss가 없을 때를 위한 최소 폴백
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self._inner_stack = QStackedWidget()
+        self._table_screen = _FileTableScreen()
+        self._grouped_screen = _GroupedScreen()
+        self._inner_stack.addWidget(self._table_screen)    # inner index 0
+        self._inner_stack.addWidget(self._grouped_screen)  # inner index 1
+        layout.addWidget(self._inner_stack)
+
+        self._table_screen.autoOrganizeRequested.connect(self._show_grouped)
+        self._table_screen.addPathRequested.connect(self._on_path_added)
+        self._grouped_screen.editRequested.connect(self._show_table)
+        self._grouped_screen.organizeConfirmed.connect(self._on_organize_confirmed)
+
+    # ---- 화면 전환 ----
+    def _show_grouped(self):
+        self._inner_stack.setCurrentWidget(self._grouped_screen)
+
+    def _show_table(self):
+        self._inner_stack.setCurrentWidget(self._table_screen)
+
+    # ---- 이벤트 핸들러 (실제 로직은 추후 컨트롤러/서비스로 교체) ----
+    def _on_path_added(self, path):
+        QMessageBox.information(self, "경로 추가됨", f"다음 폴더가 정리 대상에 추가되었습니다:\n{path}")
+
+    def _on_organize_confirmed(self):
+        QMessageBox.information(self, "정리 완료", "선택한 계획대로 파일 정리가 완료되었습니다.")
+
+    # ---- 외부(컨트롤러)에서 실데이터 주입할 때 쓰는 진입점 ----
+    def set_file_rows(self, rows):
+        """rows: list[tuple(파일명, 태그, 파일경로)]"""
+        self._table_screen.set_rows(rows)
+
+    def set_grouped_result(self, groups):
+        """groups: list[tuple(폴더명, list[tuple(kind, label)])]"""
+        self._grouped_screen.set_groups(groups)
