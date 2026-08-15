@@ -1,7 +1,7 @@
 import os
 import json
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, 
+    QMenu, QWidget, QVBoxLayout, QHBoxLayout, 
     QGroupBox, QPushButton, QLabel, QTableWidget, 
     QTableWidgetItem, QCheckBox, QHeaderView, QAbstractItemView, QLineEdit
 )
@@ -318,7 +318,7 @@ class SettingsView(QWidget):
 
         addRoot = QPushButton('경로추가')
         addRoot.setObjectName("addRoot")
-        addRoot.clicked.connect(self.add_folder)
+        addRoot.clicked.connect(self.add_path)
 
         # 테이블영역
         self.table = QTableWidget()
@@ -407,6 +407,7 @@ class SettingsView(QWidget):
     def hide_preset_input(self):
         self.preset_name_input.clear()
         self.preset_input_widget.hide()
+
     # 프리셋 저장 함수
     def save_preset(self):
 
@@ -454,6 +455,7 @@ class SettingsView(QWidget):
         # JSON 파일 저장 위치
         file_path = os.path.join(
             os.getcwd(),
+            "assets",
             "preset.json"
         )
 
@@ -470,11 +472,13 @@ class SettingsView(QWidget):
 
         # 입력창 닫기
         self.hide_preset_input()
+
     # 프리셋 불러오기 함수
     def load_preset(self):
 
         file_path = os.path.join(
             os.getcwd(),
+            "assets",
             "preset.json"
         )
 
@@ -490,50 +494,18 @@ class SettingsView(QWidget):
         # 기존 테이블 삭제
         self.table.setRowCount(0)
 
-        # JSON의 폴더 정보 가져오기
+        # JSON의 경로 정보 가져오기
         for folder in preset.get("folders", []):
 
-            row = self.table.rowCount()
-            self.table.insertRow(row)
+            selected_path = folder.get("path", "")
+            checked = folder.get("checked", False)
 
-            # 체크박스
-            checkbox = QCheckBox()
+            if not selected_path:
+                continue
 
-            widget = QWidget()
-            layout = QHBoxLayout(widget)
-
-            layout.addWidget(checkbox)
-            layout.setAlignment(Qt.AlignCenter)
-            layout.setContentsMargins(0, 0, 0, 0)
-
-            self.table.setCellWidget(row, 0, widget)
-
-            # 저장했던 체크 상태
-            checkbox.setChecked(
-                folder.get("checked", False)
-            )
-
-            # 번호
-            numItem = QTableWidgetItem(str(row + 1))
-            numItem.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row, 1, numItem)
-
-            # 폴더 이름
-            self.table.setItem(
-                row,
-                2,
-                QTableWidgetItem(
-                    folder.get("name", "")
-                )
-            )
-
-            # 폴더 경로
-            self.table.setItem(
-                row,
-                3,
-                QTableWidgetItem(
-                    folder.get("path", "")
-                )
+            self.add_table_item(
+                selected_path,
+                checked
             )
 
         print(
@@ -542,18 +514,43 @@ class SettingsView(QWidget):
     #메인화면으로 이동 함수
     def go_search(self):
         self.stacked_widget.setCurrentIndex(1)
-    #파일탐색기 오픈, 폴더 선택 후 테이블에 추가
-    def add_folder(self):
-        folder_path = QFileDialog.getExistingDirectory(
-            self,
-            "폴더 선택"
+    #경로추가
+    def add_path(self):
+
+        menu = QMenu(self)
+
+        file_action = menu.addAction("파일 추가")
+        folder_action = menu.addAction("폴더 추가")
+
+        action = menu.exec(
+            self.sender().mapToGlobal(
+                self.sender().rect().bottomLeft()
+            )
         )
 
-        if not folder_path:
-            return
+        if action == file_action:
 
-        # 폴더 이름
-        folder_name = os.path.basename(folder_path)
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "파일 선택"
+            )
+
+            if file_path:
+                self.add_table_item(file_path)
+
+        elif action == folder_action:
+
+            folder_path = QFileDialog.getExistingDirectory(
+                self,
+                "폴더 선택"
+            )
+
+            if folder_path:
+                self.add_table_item(folder_path)
+    def add_table_item(self, selected_path, checked=False):
+
+        # 파일/폴더 이름
+        path_name = os.path.basename(selected_path)
 
         # 현재 행 개수
         row = self.table.rowCount()
@@ -563,6 +560,7 @@ class SettingsView(QWidget):
 
         # 체크박스
         checkbox = QCheckBox()
+        checkbox.setChecked(checked)
 
         widget = QWidget()
         layout = QHBoxLayout(widget)
@@ -576,21 +574,22 @@ class SettingsView(QWidget):
         # 번호
         numItem = QTableWidgetItem(str(row + 1))
         numItem.setTextAlignment(Qt.AlignCenter)
+
         self.table.setItem(row, 1, numItem)
 
-        # 폴더 이름
+        # 파일/폴더 이름
         self.table.setItem(
             row,
             2,
-            QTableWidgetItem(folder_name)
+            QTableWidgetItem(path_name)
         )
 
-        # 폴더 경로
+        # 파일/폴더 경로
         self.table.setItem(
             row,
             3,
-            QTableWidgetItem(folder_path)
-        )
+            QTableWidgetItem(selected_path)
+        )   
 
 
 
