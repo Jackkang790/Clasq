@@ -1,0 +1,14 @@
+# 가상환경
+venv/
+env/
+
+# 파이썬 캐시 파일
+__pycache__/
+*.pyc
+
+# 환경변수 파일
+.env
+
+# 에디터 임시 파일
+.vscode/
+tempCodeRunnerFile.py
