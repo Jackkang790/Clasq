@@ -1,10 +1,10 @@
 # ========================================================+
-# [main_processor.py] 
+# [DB_main_processor.py]
 # 순서도 스펙 기반 통합 라우팅, 경로 정제 및 DB 자동 저장 완결 모듈
 # =========================================================
 import os
 from typing import Dict, Any
- 
+
 # 🌟 [팀원 C 수정 - 2026-08] import 방식 두 가지를 모두 지원하도록 변경
 #
 #   [문제 상황]
@@ -29,20 +29,21 @@ from typing import Dict, Any
 try:
     from .file_pipeline import TextExtractor, FileAnalyzer
     from .query_parser import SearchQueryParser
-    from .db_manager import FileRegistryManager  # 🌟 [팀원 C] DB 저장/무결성/중복감지 전담 모듈
+    # 🌟 [팀원 C] DB 저장/무결성/중복감지 전담 모듈
+    from .db_manager import FileRegistryManager
 except ImportError:
     from file_pipeline import TextExtractor, FileAnalyzer
     from query_parser import SearchQueryParser
     from db_manager import FileRegistryManager  # 🌟 [팀원 C] DB 저장/무결성/중복감지 전담 모듈
- 
- 
+
+
 class MainProcessor:
     """통합 관제탑 클래스 (DB 자동 저장 및 경로 깨짐 방어 적용)"""
- 
+
     def __init__(
-        self, 
-        extractor: TextExtractor, 
-        analyzer: FileAnalyzer, 
+        self,
+        extractor: TextExtractor,
+        analyzer: FileAnalyzer,
         query_parser: SearchQueryParser,
         db_path: str = "file_manager.db"
     ):
@@ -58,7 +59,7 @@ class MainProcessor:
         #   그러면 gui_app.py 쪽에도 같은 스키마가 중복 정의되는 문제가 있었음
         # - FileRegistryManager 하나로 스키마/저장/중복감지 로직을 단일화함
         self.registry = FileRegistryManager(db_path=db_path)
- 
+
     def _normalize_path(self, path: str) -> str:
         """
         [경로 정제 함수]
@@ -71,7 +72,7 @@ class MainProcessor:
             return ""
         clean_path = path.replace('￥', '/').replace('\\', '/')
         return os.path.abspath(clean_path)
- 
+
     def _save_to_db(self, file_path: str, metadata_result: Dict[str, Any]) -> Dict[str, Any]:
         """
         [DB 저장 함수 - 팀원 C 담당 영역]
@@ -90,7 +91,7 @@ class MainProcessor:
             print(f"[중복 파일 감지]: {file_path} -> {result.get('duplicate_of')} 와 내용 동일 "
                   f"(정책: {self.registry.duplicate_policy})")
         return result
- 
+
     def sync_db_with_disk(self):
         """
         [DB-디스크 동기화 함수 - 팀원 C 담당 영역]
@@ -100,7 +101,7 @@ class MainProcessor:
         (workers.py의 폴더 스캔 스레드 종료 시점에 호출됨)
         """
         return self.registry.sync_missing_files()
- 
+
     # ---------------------------------------------------------
     # [유스케이스 1] 파일 업로드 및 분석 요청 처리
     # ---------------------------------------------------------
@@ -112,41 +113,42 @@ class MainProcessor:
         """
         # 1) 경로 정제 (윈도우 경로 깨짐 방어)
         file_path = self._normalize_path(raw_file_path)
- 
+
         # 2) 파일 존재 여부 확인 - 스캔 이후 파일이 지워졌거나 잘못된 경로면 에러로 라우팅
         if not os.path.exists(file_path):
             return self._route_execution({
-                "@TYPE": "@ERROR", 
+                "@TYPE": "@ERROR",
                 "message": f"파일을 찾을 수 없습니다: {file_path}"
             })
- 
+
         # 3) 파일 종류별로 분기 처리 (전처리는 팀원 B의 file_pipeline.py 담당)
         # A. 이미지 파일 처리 -> Vision 모델(예: llava)로 이미지 자체를 분석
         if self.extractor.is_image_file(file_path):
             img_bytes, status = self.extractor.process_image(file_path)
             if status != "SUCCESS":
                 # 이미지 리사이즈/디코딩 실패 시 AI 호출 없이 바로 실패 응답 생성
-                res = self.analyzer._build_fallback_response({"original_name": os.path.basename(file_path)}, status)
+                res = self.analyzer._build_fallback_response(
+                    {"original_name": os.path.basename(file_path)}, status)
             else:
                 res = self.analyzer.analyze_image_bytes(file_path, img_bytes)
- 
+
         # B. 오디오/비디오 미디어 파일 처리 -> STT 등으로 텍스트 추출 후 텍스트 모델로 분석
         elif self.extractor.is_media_file(file_path):
             text, status = self.extractor.process_media(file_path)
             res = self.analyzer.analyze_document_text(file_path, text)
- 
+
         # C. 그 외 일반 문서(txt, pdf, docx, xlsx, hwp 등) -> 텍스트 추출 후 텍스트 모델로 분석
         else:
             text, status = self.extractor.extract(file_path)
             res = self.analyzer.analyze_document_text(file_path, text)
- 
+
         # 4) 🌟 [연결의 핵심] AI 분석이 끝난 결과를 즉시 DB에 저장 (팀원 C의 registry로 위임)
         #    - 이 한 줄이 B(전처리/AI)의 결과물과 C(DB저장)를 실제로 이어주는 지점.
         self._save_to_db(file_path, res)
- 
+
         # 5) 프론트엔드가 받을 응답 형태로 포장해서 반환
         return self._route_execution(res)
- 
+
     # ---------------------------------------------------------
     # [유스케이스 2] 자연어 검색창 입력문 처리
     # ---------------------------------------------------------
@@ -161,7 +163,7 @@ class MainProcessor:
         """
         res = self.query_parser.parse_user_query(user_text)
         return self._route_execution(res.get("data", {}))
- 
+
     # ---------------------------------------------------------
     # [핵심 라우터] 순서도 조건 판단 및 FE 전달 데이터 포장
     # ---------------------------------------------------------
@@ -177,30 +179,31 @@ class MainProcessor:
                        프론트엔드/디버깅 시 원인 파악이 가능하게 함
         모든 응답에 target_fe: True를 붙여, "이건 프론트엔드로 보내야 하는 응답"임을 명시한다.
         """
-        type_val = json_data.get("@TYPE") or json_data.get("metadata", {}).get("@TYPE")
- 
+        type_val = json_data.get(
+            "@TYPE") or json_data.get("metadata", {}).get("@TYPE")
+
         if type_val == "@DB":
             return {
-                "target_fe": True, 
-                "response_type": "FILE_ORGANIZE", 
+                "target_fe": True,
+                "response_type": "FILE_ORGANIZE",
                 "payload": json_data
             }
         elif type_val == "@검색":
             return {
-                "target_fe": True, 
-                "response_type": "SEARCH_RESULT", 
+                "target_fe": True,
+                "response_type": "SEARCH_RESULT",
                 "payload": json_data
             }
         elif type_val == "@대화":
             return {
-                "target_fe": True, 
-                "response_type": "CHAT_RESPONSE", 
+                "target_fe": True,
+                "response_type": "CHAT_RESPONSE",
                 "payload": json_data
             }
         else:
             return {
-                "target_fe": True, 
-                "response_type": "ERROR", 
+                "target_fe": True,
+                "response_type": "ERROR",
                 "payload": {
                     "@TYPE": "@ERROR",
                     "message": json_data.get("message", "알 수 없는 처리 규격입니다."),

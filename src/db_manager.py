@@ -19,6 +19,7 @@ import shutil
 import time
 from contextlib import contextmanager
 from typing import Dict, Any, Optional, List
+import re
 
 
 class FileRegistryManager:
@@ -92,17 +93,20 @@ class FileRegistryManager:
                     "updated_at": "TEXT",
                 },
             )
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_files_hash ON files(file_hash)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_files_hash ON files(file_hash)")
             conn.commit()
         finally:
             conn.close()
 
     def _migrate_add_columns(self, conn: sqlite3.Connection, columns: Dict[str, str]) -> None:
         """기존 DB에 신규 컬럼이 없으면 ALTER TABLE로 안전하게 추가 (기존 데이터는 그대로 보존)"""
-        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
+        existing_cols = {row[1] for row in conn.execute(
+            "PRAGMA table_info(files)").fetchall()}
         for col_name, col_type in columns.items():
             if col_name not in existing_cols:
-                conn.execute(f"ALTER TABLE files ADD COLUMN {col_name} {col_type}")
+                conn.execute(
+                    f"ALTER TABLE files ADD COLUMN {col_name} {col_type}")
 
     # ---------------------------------------------------------
     # 2. 대량 스캔용 커넥션 재사용 세션
@@ -177,7 +181,8 @@ class FileRegistryManager:
             rows = conn.execute("SELECT file_path FROM files").fetchall()
             for (file_path,) in rows:
                 if not os.path.exists(file_path):
-                    conn.execute("DELETE FROM files WHERE file_path = ?", (file_path,))
+                    conn.execute(
+                        "DELETE FROM files WHERE file_path = ?", (file_path,))
                     removed.append(file_path)
             conn.commit()
         finally:
@@ -197,7 +202,8 @@ class FileRegistryManager:
         한 번의 호출은 항상 하나의 트랜잭션으로 처리되어, 저장 도중 오류가 나도
         DB에 절반만 반영된 깨진 레코드가 남지 않는다.
         """
-        result: Dict[str, Any] = {"success": False, "file_path": file_path, "is_duplicate": False}
+        result: Dict[str, Any] = {"success": False,
+                                  "file_path": file_path, "is_duplicate": False}
 
         if not os.path.exists(file_path):
             result["message"] = f"파일을 찾을 수 없습니다: {file_path}"
@@ -210,7 +216,8 @@ class FileRegistryManager:
             conn.execute("BEGIN IMMEDIATE")
 
             file_hash = self.compute_file_hash(file_path)
-            dup_row = self._find_by_hash(conn, file_hash, exclude_path=file_path)
+            dup_row = self._find_by_hash(
+                conn, file_hash, exclude_path=file_path)
 
             final_path = file_path
             if dup_row is not None:
@@ -253,7 +260,8 @@ class FileRegistryManager:
                     file_size = excluded.file_size,
                     updated_at = excluded.updated_at
                 """,
-                (file_name, final_path, ai_comment, category, file_hash, file_size, now, now),
+                (file_name, final_path, ai_comment,
+                 category, file_hash, file_size, now, now),
             )
 
             conn.commit()
@@ -284,4 +292,47 @@ class FileRegistryManager:
             conn.commit()
         finally:
             if owns_conn:
+                conn.close()
+
+    def organize_file(self, file_id: int, target_category: str, base_dir: str) -> bool:
+        """물리적 파일 이동 및 DB 업데이트"""
+        # 0. 폴더명으로 쓸 수 없는 문자 제거
+        safe_category = re.sub(r'[\\/*?:"<>|]', "", target_category).strip()
+
+        conn = self._get_conn()
+        try:
+            row = conn.execute(
+                "SELECT file_path FROM files WHERE id = ?", (file_id,)
+            ).fetchone()
+
+            if not row:
+                return False
+
+            old_path = row[0]
+
+            if not os.path.exists(old_path):
+                print(f"[에러] 원본 파일을 찾을 수 없음: {old_path}")
+                return False
+
+            new_dir = os.path.join(base_dir, safe_category)
+            os.makedirs(new_dir, exist_ok=True)
+            new_path = os.path.join(new_dir, os.path.basename(old_path))
+
+            # 파일 이동
+            shutil.move(old_path, new_path)
+
+            # DB 업데이트
+            conn.execute(
+                "UPDATE files SET file_path = ? WHERE id = ?", (
+                    new_path, file_id)
+            )
+            conn.commit()
+            return True
+
+        except Exception as e:
+            print(f"[파일 이동 실패]: {e}")
+            return False
+
+        finally:
+            if self._bulk_conn is None:  # bulk_session이 아닐 때만 닫음
                 conn.close()
