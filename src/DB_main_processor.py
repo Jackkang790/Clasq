@@ -164,49 +164,126 @@ class MainProcessor:
         res = self.query_parser.parse_user_query(user_text)
         return self._route_execution(res.get("data", {}))
 
-    # ---------------------------------------------------------
-    # [핵심 라우터] 순서도 조건 판단 및 FE 전달 데이터 포장
-    # ---------------------------------------------------------
+    # # ---------------------------------------------------------
+    # # [핵심 라우터] 순서도 조건 판단 및 FE 전달 데이터 포장
+    # # ---------------------------------------------------------
+
     def _route_execution(self, json_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        [응답 라우팅 함수]
-        AI/DB 처리 결과에 담긴 "@TYPE" 값을 보고, 프론트엔드가 어떤 화면을
-        그려야 하는지(response_type)를 결정해서 공통 포맷으로 감싸준다.
-        - @DB   : 파일 분석/저장 완료 -> 파일 정리 화면(FILE_ORGANIZE) 갱신
-        - @검색 : 사용자가 검색 의도로 입력함 -> 검색 결과 화면(SEARCH_RESULT) 갱신
-        - @대화 : 사용자가 그냥 대화하듯 입력함 -> 챗 팝업(CHAT_RESPONSE) 표시
-        - 그 외/누락 : 알 수 없는 형식 -> ERROR로 처리, 원본 데이터(raw_data)도 같이 실어서
-                       프론트엔드/디버깅 시 원인 파악이 가능하게 함
-        모든 응답에 target_fe: True를 붙여, "이건 프론트엔드로 보내야 하는 응답"임을 명시한다.
-        """
         type_val = json_data.get(
             "@TYPE") or json_data.get("metadata", {}).get("@TYPE")
 
         if type_val == "@DB":
-            return {
+            meta = json_data.get("metadata", {})
+
+            formatted_payload = {
+                "type": "db",
+                "action": "update",
+                "data": {
+                    # DB 저장 후 얻은 ID (임시 0)
+                    "file_id": json_data.get("file_id", 0),
+                    "display_name": meta.get("display_name", ""),
+                    "description": meta.get("description", ""),
+                    "tags": meta.get("tags", [])
+                }
+            }
+
+            db_dict = {
                 "target_fe": True,
                 "response_type": "FILE_ORGANIZE",
-                "payload": json_data
+                "payload": formatted_payload
             }
+
+            # 파일 삭제를 수행할 객체의 메서드 호출
+
+            return db_dict
+
         elif type_val == "@검색":
-            return {
+            formatted_payload = {
+                "type": "search",
+                "condition": {
+                    "tags": json_data.get("query_keywords", []),
+                    "limit": 20
+                }
+            }
+
+            search_dict = {
                 "target_fe": True,
                 "response_type": "SEARCH_RESULT",
-                "payload": json_data
+                "payload": formatted_payload
             }
+
+            # 파일 삭제를 수행할 객체의 메서드 호출
+
+            return search_dict
+
         elif type_val == "@대화":
-            return {
+            chat_dict = {
                 "target_fe": True,
                 "response_type": "CHAT_RESPONSE",
-                "payload": json_data
+                "payload": {
+                    "type": "chat",
+                    "message": json_data.get("reply_text", "")
+                }
             }
+            return chat_dict
+
         else:
             return {
                 "target_fe": True,
                 "response_type": "ERROR",
                 "payload": {
-                    "@TYPE": "@ERROR",
+                    "type": "error",
                     "message": json_data.get("message", "알 수 없는 처리 규격입니다."),
                     "raw_data": json_data
                 }
             }
+
+
+"""
+
+수정전
+
+"""
+# def _route_execution(self, json_data: Dict[str, Any]) -> Dict[str, Any]:
+#     """
+#     [응답 라우팅 함수]
+#     AI/DB 처리 결과에 담긴 "@TYPE" 값을 보고, 프론트엔드가 어떤 화면을
+#     그려야 하는지(response_type)를 결정해서 공통 포맷으로 감싸준다.
+#     - @DB   : 파일 분석/저장 완료 -> 파일 정리 화면(FILE_ORGANIZE) 갱신
+#     - @검색 : 사용자가 검색 의도로 입력함 -> 검색 결과 화면(SEARCH_RESULT) 갱신
+#     - @대화 : 사용자가 그냥 대화하듯 입력함 -> 챗 팝업(CHAT_RESPONSE) 표시
+#     - 그 외/누락 : 알 수 없는 형식 -> ERROR로 처리, 원본 데이터(raw_data)도 같이 실어서
+#                    프론트엔드/디버깅 시 원인 파악이 가능하게 함
+#     모든 응답에 target_fe: True를 붙여, "이건 프론트엔드로 보내야 하는 응답"임을 명시한다.
+#     """
+#     type_val = json_data.get(
+#         "@TYPE") or json_data.get("metadata", {}).get("@TYPE")
+
+#     if type_val == "@DB":
+#         return {
+#             "target_fe": True,
+#             "response_type": "FILE_ORGANIZE",
+#             "payload": json_data
+#         }
+#     elif type_val == "@검색":
+#         return {
+#             "target_fe": True,
+#             "response_type": "SEARCH_RESULT",
+#             "payload": json_data
+#         }
+#     elif type_val == "@대화":
+#         return {
+#             "target_fe": True,
+#             "response_type": "CHAT_RESPONSE",
+#             "payload": json_data
+#         }
+#     else:
+#         return {
+#             "target_fe": True,
+#             "response_type": "ERROR",
+#             "payload": {
+#                 "@TYPE": "@ERROR",
+#                 "message": json_data.get("message", "알 수 없는 처리 규격입니다."),
+#                 "raw_data": json_data
+#             }
+#         }
