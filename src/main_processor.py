@@ -1,22 +1,28 @@
 # =========================================================
-# [main_processor.py] 
+# [main_processor.py]
 # 순서도 스펙 기반 통합 라우팅, 경로 정제 및 DB 자동 저장 완결 모듈
 # =========================================================
 import os
-import sqlite3
 from typing import Dict, Any
 
-from file_pipeline import TextExtractor, FileAnalyzer
-from query_parser import SearchQueryParser
+# [팀원 C 수정 적용] 실행 환경(패키지 vs 평면)에 따른 Import 충돌 방지
+try:
+    from .file_pipeline import TextExtractor, FileAnalyzer
+    from .query_parser import SearchQueryParser
+    from .db_manager import FileRegistryManager  # DB 관리는 전적으로 위임
+except ImportError:
+    from file_pipeline import TextExtractor, FileAnalyzer
+    from query_parser import SearchQueryParser
+    from db_manager import FileRegistryManager
 
 
 class MainProcessor:
     """통합 관제탑 클래스 (DB 자동 저장 및 경로 깨짐 방어 적용)"""
 
     def __init__(
-        self, 
-        extractor: TextExtractor, 
-        analyzer: FileAnalyzer, 
+        self,
+        extractor: TextExtractor,
+        analyzer: FileAnalyzer,
         query_parser: SearchQueryParser,
         db_path: str = "file_manager.db"
     ):
@@ -24,23 +30,10 @@ class MainProcessor:
         self.analyzer = analyzer
         self.query_parser = query_parser
         self.db_path = db_path
-        self._init_db()
 
-    def _init_db(self):
-        """DB 테이블 존재 여부 확인 및 자동 생성"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS files (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                file_name TEXT,
-                file_path TEXT UNIQUE,
-                ai_comment TEXT,
-                category TEXT
-            )
-        ''')
-        conn.commit()
-        conn.close()
+        # 기존에 MainProcessor에 있던 _init_db 등의 중복 코드를 삭제하고,
+        # 팀원 C가 만든 FileRegistryManager 객체 생성 하나로 깔끔하게 단일화
+        self.registry = FileRegistryManager(db_path=db_path)
 
     def _normalize_path(self, path: str) -> str:
         """경로 문자열의 ￥ 기호 및 슬래시 깨짐 방어"""
@@ -49,25 +42,22 @@ class MainProcessor:
         clean_path = path.replace('￥', '/').replace('\\', '/')
         return os.path.abspath(clean_path)
 
-    def _save_to_db(self, file_path: str, metadata_result: Dict[str, Any]):
-        """AI 분석 완료 후 SQLite DB에 자동 저장 및 즉시 커넥션 종결"""
-        try:
-            meta = metadata_result.get("metadata", {})
-            file_name = os.path.basename(file_path)
-            ai_comment = meta.get("ai_comment", "")
-            tags = meta.get("tags", [])
-            category = f"#{tags[0]}" if tags else "#일반"
+    def _save_to_db(self, file_path: str, metadata_result: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        AI 분석 완료 후 SQLite DB에 자동 저장 및 즉시 커넥션 종결
+        실제 복잡한 저장 로직, 중복 검사는 db_manager.py로 위임됨
+        """
+        result = self.registry.save_file_result(file_path, metadata_result)
+        if not result.get("success"):
+            print(f"[DB 저장 오류]: {result.get('message')}")
+        elif result.get("is_duplicate"):
+            print(f"[중복 파일 감지]: {file_path} -> {result.get('duplicate_of')} 와 내용 동일 "
+                  f"(정책: {self.registry.duplicate_policy})")
+        return result
 
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            cursor.execute('''
-                INSERT OR REPLACE INTO files (file_name, file_path, ai_comment, category)
-                VALUES (?, ?, ?, ?)
-            ''', (file_name, file_path, ai_comment, category))
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            print(f"[DB 저장 오류]: {e}")
+    def sync_db_with_disk(self):
+        """DB에는 있지만 실제 디스크에는 없는 파일 동기화 삭제 (워커 종료 시점 활용)"""
+        return self.registry.sync_missing_files()
 
     # ---------------------------------------------------------
     # [유스케이스 1] 파일 업로드 및 분석 요청 처리
@@ -77,7 +67,7 @@ class MainProcessor:
 
         if not os.path.exists(file_path):
             return self._route_execution({
-                "@TYPE": "@ERROR", 
+                "@TYPE": "@ERROR",
                 "message": f"파일을 찾을 수 없습니다: {file_path}"
             })
 
@@ -85,7 +75,8 @@ class MainProcessor:
         if self.extractor.is_image_file(file_path):
             img_bytes, status = self.extractor.process_image(file_path)
             if status != "SUCCESS":
-                res = self.analyzer._build_fallback_response({"original_name": os.path.basename(file_path)}, status)
+                res = self.analyzer._build_fallback_response(
+                    {"original_name": os.path.basename(file_path)}, status)
             else:
                 res = self.analyzer.analyze_image_bytes(file_path, img_bytes)
 
@@ -99,7 +90,7 @@ class MainProcessor:
             text, status = self.extractor.extract(file_path)
             res = self.analyzer.analyze_document_text(file_path, text)
 
-        # 🌟 [연결의 핵심] 분석 결과를 DB에 즉시 저장!
+        # 분석 결과를 DB에 즉시 저장 (registry 호출)
         self._save_to_db(file_path, res)
 
         return self._route_execution(res)
@@ -115,30 +106,31 @@ class MainProcessor:
     # [핵심 라우터] 순서도 조건 판단 및 FE 전달 데이터 포장
     # ---------------------------------------------------------
     def _route_execution(self, json_data: Dict[str, Any]) -> Dict[str, Any]:
-        type_val = json_data.get("@TYPE") or json_data.get("metadata", {}).get("@TYPE")
+        type_val = json_data.get(
+            "@TYPE") or json_data.get("metadata", {}).get("@TYPE")
 
         if type_val == "@DB":
             return {
-                "target_fe": True, 
-                "response_type": "FILE_ORGANIZE", 
+                "target_fe": True,
+                "response_type": "FILE_ORGANIZE",
                 "payload": json_data
             }
         elif type_val == "@검색":
             return {
-                "target_fe": True, 
-                "response_type": "SEARCH_RESULT", 
+                "target_fe": True,
+                "response_type": "SEARCH_RESULT",
                 "payload": json_data
             }
         elif type_val == "@대화":
             return {
-                "target_fe": True, 
-                "response_type": "CHAT_RESPONSE", 
+                "target_fe": True,
+                "response_type": "CHAT_RESPONSE",
                 "payload": json_data
             }
         else:
             return {
-                "target_fe": True, 
-                "response_type": "ERROR", 
+                "target_fe": True,
+                "response_type": "ERROR",
                 "payload": {
                     "@TYPE": "@ERROR",
                     "message": json_data.get("message", "알 수 없는 처리 규격입니다."),

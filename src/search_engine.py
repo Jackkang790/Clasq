@@ -1,5 +1,5 @@
 # =========================================================
-# [search_engine.py] 
+# [search_engine.py]
 # DB 검색 및 자연어 의도 라우팅 후속 로직 처리 모듈
 # (불용어 제거, 동의어 사전 확장, 0건 방지 폴백 검색 완결판)
 # =========================================================
@@ -49,36 +49,48 @@ class SearchEngine:
         """
         type_val = parsed_data.get("@TYPE")
 
-        # 🅰️ [Case 1] @검색 -> DB 조회 후 표 데이터 갱신 명령
-        if type_val == "@검색":
-            raw_keywords = parsed_data.get("query_keywords", [])
+        # [Case 1] 검색 -> DB 조회 후 표 데이터 갱신 명령
+        if type_val in ["search", "@검색"]:
+
+            condition = parsed_data.get("condition", {})
+            if condition:
+                raw_keywords = condition.get("tags", [])
+            else:
+                raw_keywords = parsed_data.get("query_keywords", [])
+
             exts = parsed_data.get("target_extension", [])
-            
+
+            split_keywords = []
+            for kw in raw_keywords:
+                split_keywords.extend(kw.split())  # 띄어쓰기 기준으로 단어 분리
+
             # 불용어 제거 필터링
             filtered_keywords = [
-                kw.strip().lower() for kw in raw_keywords 
+                kw.strip().lower() for kw in split_keywords
                 if kw.strip() and kw.strip().lower() not in self.STOP_WORDS
             ]
-            
-            final_keywords = filtered_keywords if filtered_keywords else [kw.strip() for kw in raw_keywords if kw.strip()]
 
-            # 1차: 엄격한 검색 (AND 조건 + 동의어 확장)
-            search_results, is_fallback = self.search_files_smart(final_keywords, exts)
-            
+            final_keywords = filtered_keywords if filtered_keywords else [
+                kw.strip() for kw in split_keywords if kw.strip()]
+
+            # 1차: 엄격한 검색 (AND) -> 안되면 2차: 완화된 검색 (OR)
+            search_results, is_fallback = self.search_files_smart(
+                final_keywords, exts)
+
             display_kw = ', '.join(final_keywords) if final_keywords else "전체"
 
             if is_fallback:
-                msg = f"'{display_kw}' 완벽 일치 항목이 없어 일부 연관 키워드 검색 결과 {len(search_results)}건을 보여드립니다."
+                msg = f"'{display_kw}' 완벽 일치 항목이 없어 연관 키워드 검색 결과 {len(search_results)}건을 보여드립니다."
             else:
                 msg = f"'{display_kw}' 검색 결과 {len(search_results)}건을 찾았습니다."
 
             return {
-                "action": "UPDATE_TABLE", 
+                "action": "UPDATE_TABLE",
                 "message": msg,
                 "data": search_results
             }
 
-        # 🅱️ [Case 2] @대화 -> AI 대화 응답 출력 명령
+        # [Case 2] @대화 -> AI 대화 응답 출력 명령
         elif type_val == "@대화":
             reply = parsed_data.get("reply_text", "안녕하세요! 무엇을 도와드릴까요?")
             return {
@@ -125,20 +137,21 @@ class SearchEngine:
 
         if keywords:
             keyword_group_sql = []
-            
+
             for kw in keywords:
                 if not kw.strip():
                     continue
 
                 # 동의어 사전 매핑을 통한 검색어 확장
                 synonyms = self.SYNONYM_MAP.get(kw, [kw])
-                
+
                 # 각 단어 또는 동의어 그룹 내에서 OR 매칭 조건 형성
                 synonym_conditions = []
                 for syn in synonyms:
-                    synonym_conditions.append("(file_name LIKE ? OR ai_comment LIKE ? OR category LIKE ?)")
+                    synonym_conditions.append(
+                        "(file_name LIKE ? OR ai_comment LIKE ? OR category LIKE ?)")
                     params.extend([f"%{syn}%", f"%{syn}%", f"%{syn}%"])
-                
+
                 single_kw_sql = "(" + " OR ".join(synonym_conditions) + ")"
                 keyword_group_sql.append(single_kw_sql)
 
@@ -154,7 +167,7 @@ class SearchEngine:
                 if ext.strip():
                     ext_conditions.append("file_path LIKE ?")
                     params.append(f"%{ext}")
-            
+
             if ext_conditions:
                 query += " AND (" + " OR ".join(ext_conditions) + ")"
 
@@ -178,4 +191,5 @@ if __name__ == "__main__":
         "query_keywords": ["전쟁", "파일"],
         "target_extension": []
     }
-    print("\n[검색 파싱 결과 처리]:\n", search_engine.process_query_result(sample_search_json))
+    print("\n[검색 파싱 결과 처리]:\n",
+          search_engine.process_query_result(sample_search_json))
