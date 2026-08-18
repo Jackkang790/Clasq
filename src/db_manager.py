@@ -336,3 +336,78 @@ class FileRegistryManager:
         finally:
             if self._bulk_conn is None:  # bulk_session이 아닐 때만 닫음
                 conn.close()
+
+    def delete_file(self, file_id: int) -> bool:
+        """
+        [물리적 파일 삭제 및 DB 레코드 제거]
+        지정된 file_id의 실제 파일을 디스크 및 DB에서 삭제.
+        """
+        conn = self._get_conn()
+        try:
+            # 1. DB에서 파일 경로 찾기
+            row = conn.execute(
+                "SELECT file_path FROM files WHERE id = ?", (file_id,)).fetchone()
+            if not row:
+                return False
+
+            target_path = row[0]
+
+            # 2. 물리적 디스크에서 파일 삭제 (파일이 존재할 경우만)
+            if os.path.exists(target_path):
+                os.remove(target_path)
+
+            # 3. DB 레코드 삭제
+            conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+            conn.commit()
+            return True
+
+        except Exception as e:
+            print(f"[파일 삭제 실패]: {e}")
+            return False
+        finally:
+            if self._bulk_conn is None:
+                conn.close()
+
+    def rename_file(self, file_id: int, new_filename: str) -> bool:
+        """
+        [물리적 파일 이름 변경 및 DB 갱신]
+        지정된 file_id의 실제 파일 이름을 바꾸고, DB의 file_name과 file_path를 업데이트.
+        (new_filename에는 확장자도 포함되어야 함. 예: "휴가계획.txt")
+        """
+        # 윈도우에서 사용할 수 없는 특수문자 방어
+        safe_name = re.sub(r'[\\/*?:"<>|]', "", new_filename).strip()
+
+        conn = self._get_conn()
+        try:
+            # 1. DB에서 현재 파일 경로 찾기
+            row = conn.execute(
+                "SELECT file_path FROM files WHERE id = ?", (file_id,)).fetchone()
+            if not row:
+                return False
+
+            old_path = row[0]
+            if not os.path.exists(old_path):
+                print(f"[에러] 원본 파일을 찾을 수 없음: {old_path}")
+                return False
+
+            # 2. 새로운 경로(이름) 생성
+            base_dir = os.path.dirname(old_path)
+            new_path = os.path.join(base_dir, safe_name)
+
+            # 3. 물리적 파일 이름 변경
+            os.rename(old_path, new_path)
+
+            # 4. DB 정보 업데이트 (파일 이름, 파일 경로 둘 다 변경)
+            conn.execute(
+                "UPDATE files SET file_name = ?, file_path = ? WHERE id = ?",
+                (safe_name, new_path, file_id)
+            )
+            conn.commit()
+            return True
+
+        except Exception as e:
+            print(f"[파일 이름 변경 실패]: {e}")
+            return False
+        finally:
+            if self._bulk_conn is None:
+                conn.close()

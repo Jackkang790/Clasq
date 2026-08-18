@@ -101,39 +101,3 @@ class MainProcessor:
     def process_user_query(self, user_text: str) -> Dict[str, Any]:
         res = self.query_parser.parse_user_query(user_text)
         return self._route_execution(res.get("data", {}))
-
-    # ---------------------------------------------------------
-    # [핵심 라우터] 순서도 조건 판단 및 FE 전달 데이터 포장
-    # ---------------------------------------------------------
-    def _route_execution(self, json_data: Dict[str, Any]) -> Dict[str, Any]:
-        type_val = json_data.get(
-            "@TYPE") or json_data.get("metadata", {}).get("@TYPE")
-
-        if type_val == "@DB":
-            return {
-                "target_fe": True,
-                "response_type": "FILE_ORGANIZE",
-                "payload": json_data
-            }
-        elif type_val == "@검색":
-            return {
-                "target_fe": True,
-                "response_type": "SEARCH_RESULT",
-                "payload": json_data
-            }
-        elif type_val == "@대화":
-            return {
-                "target_fe": True,
-                "response_type": "CHAT_RESPONSE",
-                "payload": json_data
-            }
-        else:
-            return {
-                "target_fe": True,
-                "response_type": "ERROR",
-                "payload": {
-                    "@TYPE": "@ERROR",
-                    "message": json_data.get("message", "알 수 없는 처리 규격입니다."),
-                    "raw_data": json_data
-                }
-            }
