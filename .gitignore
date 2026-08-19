@@ -4,3 +4,4 @@
 __pycache__/
 *.pyc
 assets/preset.json
+*.db

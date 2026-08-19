@@ -12,13 +12,32 @@ from PySide6.QtWidgets import (
 
 # 신규 위젯 임포트
 from src.ui.widgets.fileupload_view import FileUploadView
+from src.utils.search_engine import SearchEngine
+
+# 문장에서 확장자 필터를 뽑아낼 때 쓰는 후보 목록.
+# SearchEngine.STOP_WORDS와 겹치는 확장자 표기를 그대로 재사용한다.
+_EXTENSION_CANDIDATES = [
+    "pdf", "hwp", "hwpx", "docx", "xlsx", "pptx",
+    "png", "jpg", "jpeg", "gif", "mp3", "mp4",
+]
 
 
 class SearchView(QWidget):
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, search_engine=None, query_parser=None):
+        """
+        search_engine: SearchEngine 인스턴스를 밖에서 주입할 수 있다.
+                       (DB 경로를 다르게 쓰거나 테스트용 mock을 넣고 싶을 때)
+        query_parser:  자연어 문장(str) -> parsed_data(dict)로 바꾸는 함수.
+                       REQ-011의 실제 LLM 의도 파서가 준비되면 이 인자로 갈아끼우면 된다.
+                       시그니처: (text: str) -> dict  (SearchEngine.process_query_result가 먹는 형태)
+        """
         super().__init__(parent)
         self.setAcceptDrops(True)
+
+        self.search_engine = search_engine or SearchEngine()
+        self._query_parser = query_parser or self._parse_natural_query
+
         self.init_ui()
 
     def init_ui(self):
@@ -59,6 +78,24 @@ class SearchView(QWidget):
                 background-color: #FFFFFF;
                 color: #212529;
                 border: 1px solid #E0E0E0;
+                border-radius: 12px;
+                padding: 10px 14px;
+                font-size: 14px;
+            }
+
+            QLabel.resultBubble {
+                background-color: #F5F4FF;
+                color: #212529;
+                border: 1px solid #DCD6FF;
+                border-radius: 12px;
+                padding: 10px 14px;
+                font-size: 13px;
+            }
+
+            QLabel.errorBubble {
+                background-color: #FDEDEC;
+                color: #C0392B;
+                border: 1px solid #F5B7B1;
                 border-radius: 12px;
                 padding: 10px 14px;
                 font-size: 14px;
@@ -124,8 +161,6 @@ class SearchView(QWidget):
 
         chat_main_layout.addWidget(self.chat_input_widget)
 
-        chat_main_layout.addWidget(self.chat_input_widget)
-
         self.stacked_layout.addWidget(self.init_widget)  # Index 0
         self.stacked_layout.addWidget(self.chat_widget)  # Index 1
         self.stacked_layout.setCurrentIndex(0)
@@ -149,12 +184,93 @@ class SearchView(QWidget):
         self.add_message(f"📎 [파일 첨부]: {file_path}", is_user=True)
         self.add_message(f"'{file_path}' 파일을 분석 중입니다...", is_user=False)
 
+    # -----------------------------------------------------------------
+    # 실제 검색 연결부: 자연어 -> parser -> SearchEngine -> 채팅 UI 렌더링
+    # -----------------------------------------------------------------
     def process_query(self, query: str):
         self.add_message(query, is_user=True)
-        ai_response = f"'{query}'에 대한 검색 결과를 확인했습니다."
-        self.add_message(ai_response, is_user=False)
 
-    def add_message(self, text: str, is_user: bool = True):
+        parsed_data = self._query_parser(query)
+
+        try:
+            result = self.search_engine.process_query_result(parsed_data)
+        except Exception as exc:
+            # DB 파일/테이블이 아직 없는 초기 상태 등을 대비한 방어 처리.
+            # (REQ-006과 동일하게, 백엔드 연결 실패 시 앱이 죽지 않고 안내만 하도록.)
+            self.add_message(f"⚠️ 검색 중 오류가 발생했습니다: {exc}", is_user=False, kind="error")
+            return
+
+        action = result.get("action")
+        message = result.get("message", "")
+        data = result.get("data", [])
+
+        if action == "UPDATE_TABLE":
+            self.add_message(message, is_user=False)
+            self._render_search_results(data)
+        elif action == "SHOW_CHAT":
+            self.add_message(message, is_user=False)
+        else:  # ERROR
+            self.add_message(f"⚠️ {message}", is_user=False, kind="error")
+
+    def _render_search_results(self, rows):
+        """
+        SearchEngine이 돌려주는 (id, file_name, file_path, ai_comment, category) 튜플 목록을
+        채팅 버블 형태로 하나씩 표시한다.
+        """
+        MAX_SHOWN = 10
+        for row in rows[:MAX_SHOWN]:
+            _id, file_name, file_path, ai_comment, category = row
+            lines = [f"📄 {file_name}"]
+            if category:
+                lines.append(f"분류: {category}")
+            if file_path:
+                lines.append(f"경로: {file_path}")
+            if ai_comment:
+                lines.append(f"메모: {ai_comment}")
+            self.add_message("\n".join(lines), is_user=False, kind="result")
+
+        remaining = len(rows) - MAX_SHOWN
+        if remaining > 0:
+            self.add_message(f"...외 {remaining}건 더 있습니다.", is_user=False)
+
+    # -----------------------------------------------------------------
+    # 임시 자연어 파서 (TODO: REQ-011 LLM 의도 파서로 교체 예정)
+    # -----------------------------------------------------------------
+    def _parse_natural_query(self, text: str) -> dict:
+        """
+        아주 단순한 규칙 기반 임시 파서.
+        - 문장에서 알려진 확장자 단어를 뽑아 target_extension으로 분리
+        - 나머지 단어는 전부 query_keywords로 넘겨서 SearchEngine의
+          불용어 제거/동의어 확장/AND->OR 폴백 로직이 실제 필터링을 하도록 위임한다.
+        - 항상 "@검색"으로 라우팅한다 (자유 대화 의도 분류는 LLM 파서가 붙기 전까진 생략).
+        """
+        words = text.strip().split()
+        extensions = []
+        keywords = []
+
+        for w in words:
+            w_clean = w.strip(".,!?").lower()
+            if w_clean in _EXTENSION_CANDIDATES:
+                extensions.append(w_clean)
+            else:
+                keywords.append(w)
+
+        return {
+            "@TYPE": "@검색",
+            "query_keywords": keywords,
+            "target_extension": extensions,
+        }
+
+    # -----------------------------------------------------------------
+    # 채팅 버블 렌더링
+    # -----------------------------------------------------------------
+    def add_message(self, text: str, is_user: bool = True, kind: str = "normal"):
+        """
+        kind: "normal" | "result" | "error"
+        - normal: 기존 userBubble/aiBubble
+        - result: 검색 결과 1건을 나타내는 연보라색 버블
+        - error : 에러/경고를 나타내는 빨간 톤 버블
+        """
         row_layout = QHBoxLayout()
         bubble = QLabel(text)
         bubble.setWordWrap(True)
@@ -164,7 +280,12 @@ class SearchView(QWidget):
             row_layout.addStretch()
             row_layout.addWidget(bubble)
         else:
-            bubble.setProperty("class", "aiBubble")
+            if kind == "result":
+                bubble.setProperty("class", "resultBubble")
+            elif kind == "error":
+                bubble.setProperty("class", "errorBubble")
+            else:
+                bubble.setProperty("class", "aiBubble")
             row_layout.addWidget(bubble)
             row_layout.addStretch()
 
