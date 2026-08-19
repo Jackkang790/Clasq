@@ -19,7 +19,7 @@ class Sidebar(QFrame):
 
             /* 사이드바 내 기본 메뉴 버튼 재정의 */
             Sidebar QPushButton {
-                text-align: left;
+                text-align: center;
                 padding: 10px 12px;
                 background-color: transparent;
                 color: #333333;
