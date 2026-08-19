@@ -91,10 +91,23 @@ class FileRegistryManager:
                     "file_size": "INTEGER",
                     "created_at": "TEXT",
                     "updated_at": "TEXT",
+                    "tags": "TEXT",
+                    "source_path": "TEXT",
                 },
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_files_hash ON files(file_hash)")
+            
+            # 경로 관리 테이블 생성
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS managed_paths (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    path TEXT UNIQUE,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
             conn.commit()
         finally:
             conn.close()
@@ -191,7 +204,63 @@ class FileRegistryManager:
         return removed
 
     # ---------------------------------------------------------
-    # 5. 메인 저장 함수 (main_processor.py의 _save_to_db 대체)
+    # 5. 경로 관리 함수
+    # ---------------------------------------------------------
+    def add_managed_path(self, path: str) -> Dict[str, Any]:
+        """관리할 경로를 DB에 추가"""
+        path = os.path.abspath(path)
+        if not os.path.exists(path):
+            return {"success": False, "message": f"경로가 존재하지 않습니다: {path}"}
+        
+        conn = self._get_conn()
+        owns_conn = self._bulk_conn is None
+        try:
+            conn.execute(
+                "INSERT OR IGNORE INTO managed_paths (path) VALUES (?)",
+                (path,)
+            )
+            conn.commit()
+            return {"success": True, "message": f"경로가 추가되었습니다: {path}"}
+        except Exception as e:
+            return {"success": False, "message": f"경로 추가 실패: {str(e)}"}
+        finally:
+            if owns_conn:
+                conn.close()
+
+    def get_managed_paths(self) -> List[str]:
+        """관리 중인 모든 경로 조회"""
+        conn = self._get_conn()
+        owns_conn = self._bulk_conn is None
+        try:
+            rows = conn.execute("SELECT path FROM managed_paths ORDER BY created_at").fetchall()
+            return [row[0] for row in rows]
+        finally:
+            if owns_conn:
+                conn.close()
+
+    def remove_managed_path(self, path: str) -> Dict[str, Any]:
+        """관리 경로 제거"""
+        path = os.path.abspath(path)
+        conn = self._get_conn()
+        owns_conn = self._bulk_conn is None
+        try:
+            cursor = conn.execute(
+                "DELETE FROM managed_paths WHERE path = ?",
+                (path,)
+            )
+            conn.commit()
+            if cursor.rowcount > 0:
+                return {"success": True, "message": f"경로가 제거되었습니다: {path}"}
+            else:
+                return {"success": False, "message": f"경로를 찾을 수 없습니다: {path}"}
+        except Exception as e:
+            return {"success": False, "message": f"경로 제거 실패: {str(e)}"}
+        finally:
+            if owns_conn:
+                conn.close()
+
+    # ---------------------------------------------------------
+    # 6. 메인 저장 함수 (main_processor.py의 _save_to_db 대체)
     # ---------------------------------------------------------
     def save_file_result(self, file_path: str, metadata_result: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -239,6 +308,8 @@ class FileRegistryManager:
             ai_comment = meta.get("ai_comment", "")
             tags = meta.get("tags", [])
             category = f"#{tags[0]}" if tags else "#일반"
+            tags_str = ",".join(tags) if tags else ""
+            source_path = os.path.dirname(final_path)
             file_size = os.path.getsize(final_path)
             now = time.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -250,18 +321,20 @@ class FileRegistryManager:
             conn.execute(
                 """
                 INSERT INTO files (file_name, file_path, ai_comment, category,
-                                    file_hash, file_size, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                    file_hash, file_size, created_at, updated_at, tags, source_path)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(file_path) DO UPDATE SET
                     file_name = excluded.file_name,
                     ai_comment = excluded.ai_comment,
                     category = excluded.category,
                     file_hash = excluded.file_hash,
                     file_size = excluded.file_size,
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    tags = excluded.tags,
+                    source_path = excluded.source_path
                 """,
                 (file_name, final_path, ai_comment,
-                 category, file_hash, file_size, now, now),
+                 category, file_hash, file_size, now, now, tags_str, source_path),
             )
 
             conn.commit()

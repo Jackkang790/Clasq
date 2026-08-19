@@ -15,7 +15,7 @@ class SearchQueryParser:
     의도를 분석하여 구조화된 JSON(@검색, @대화)으로 변환해 반환합니다.
     """
 
-    def __init__(self, ollama_url: str = "http://localhost:11434", model: str = "qwen2.5:3b"):
+    def __init__(self, ollama_url: str = "http://localhost:11434", model: str = "gemma2:9b"):
         self.ollama_api_url = f"{ollama_url.rstrip('/')}/api/generate"
         self.model = model
 
@@ -57,6 +57,8 @@ If "@대화":
   "@TYPE": "@대화",
   "reply_text": "사용자 질문에 맞는 친절하고 완성도 높은 한글 대화 응답 문장"
 }}
+
+Keep your response brief and concise.
 """
 
         payload = {
@@ -64,11 +66,11 @@ If "@대화":
             "prompt": prompt,
             "format": "json",
             "stream": False,
-            "options": {"temperature": 0.1}
+            "options": {"temperature": 0.1, "num_predict": 100}
         }
 
         try:
-            res = requests.post(self.ollama_api_url, json=payload, timeout=30)
+            res = requests.post(self.ollama_api_url, json=payload, timeout=120)
             res.raise_for_status()
             
             raw_text = res.json().get("response", "").strip()
@@ -104,7 +106,7 @@ If "@대화":
 # 단독 테스트 실행부 (main)
 # =========================================================
 if __name__ == "__main__":
-    parser = SearchQueryParser(model="qwen2.5:3b")
+    parser = SearchQueryParser(model="gemma2:9b")
 
     print("=== [SearchQueryParser] 자연어 의도 파싱 테스트 ===")
 

@@ -1,5 +1,6 @@
 import os
 import json
+from pathlib import Path
 from PySide6.QtWidgets import (
     QMenu, QWidget, QVBoxLayout, QHBoxLayout,
     QGroupBox, QPushButton, QLabel, QTableWidget,
@@ -12,6 +13,12 @@ from PySide6.QtCore import QSize
 from PySide6.QtWidgets import QFileDialog
 from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+ASSETS_DIR = PROJECT_ROOT / "assets"
+ICONS_DIR = ASSETS_DIR / "styles" / "icons"
+PRESET_PATH = ASSETS_DIR / "preset.json"
+
 
 
 # ================================
@@ -96,9 +103,10 @@ class ToggleSwitch(QWidget):
 # 메인 설정 뷰
 # ================================
 class SettingsView(QWidget):
-    def __init__(self, stacked_widget, parent=None):
+    def __init__(self, stacked_widget, core=None, parent=None):
         super().__init__(parent)
         self.stacked_widget = stacked_widget
+        self.core = core
         self.setObjectName("settingsView")
         self.init_layout()
         self.init_ui()
@@ -176,10 +184,19 @@ class SettingsView(QWidget):
             QCheckBox::indicator:checked {
                 background-color: #4F84E8;
                 border: 1px solid #4F84E8;
-                image: url(assets/styles/icons/check.svg);
+                image: url(__CHECK_ICON__);
             }
             QTableWidget QWidget { background: transparent; }
-        """)
+            QPushButton#delRoot {
+                padding: 8px 16px;
+                border-radius: 8px;
+                background-color: #EF4444;
+                color: white;
+                border: none;
+            }
+            QPushButton#delRoot:hover { background-color: #DC2626; }
+            QPushButton#delRoot:pressed { background-color: #B91C1C; }
+        """.replace("__CHECK_ICON__", (ICONS_DIR / "check.svg").as_posix()))
 
     def toggle_all(self, checked):
         for row in range(self.table.rowCount()):
@@ -204,8 +221,7 @@ class SettingsView(QWidget):
 
         # 상단 요소
         backbtn = QPushButton()
-        icon_path = os.path.join("assets", "styles", "icons", "home.svg")
-        backbtn.setIcon(QIcon(icon_path))
+        backbtn.setIcon(QIcon(str(ICONS_DIR / "home.svg")))
         backbtn.setIconSize(QSize(24, 24))
         backbtn.setObjectName("backbtn")
         backbtn.clicked.connect(self.go_search)
@@ -246,6 +262,10 @@ class SettingsView(QWidget):
         clearbtn = QPushButton('태그부착')
         clearbtn.setObjectName("clearbtn")
 
+        delRoot = QPushButton('경로삭제')
+        delRoot.setObjectName("delRoot")
+        delRoot.clicked.connect(self.delete_selected_paths)
+
         addRoot = QPushButton('경로추가')
         addRoot.setObjectName("addRoot")
         addRoot.clicked.connect(self.add_path)
@@ -284,6 +304,7 @@ class SettingsView(QWidget):
         option.setLayout(option_main_layout)
 
         btnlayout.addStretch()
+        btnlayout.addWidget(delRoot)
         btnlayout.addWidget(addRoot)
         tablelayout.addLayout(btnlayout)
         tablelayout.addWidget(self.table)
@@ -467,14 +488,10 @@ class SettingsView(QWidget):
         # ================================
         # JSON 파일 경로
         # ================================
-        file_path = os.path.join(
-            os.getcwd(),
-            "assets",
-            "preset.json"
-        )
+        file_path = PRESET_PATH
 
         os.makedirs(
-            os.path.dirname(file_path),
+            file_path.parent,
             exist_ok=True
         )
 
@@ -584,7 +601,7 @@ class SettingsView(QWidget):
     # ================================
     def load_preset(self):
         """저장된 프리셋 중 하나를 선택해서 테이블에 불러온다."""
-        file_path = os.path.join(os.getcwd(), "assets", "preset.json")
+        file_path = PRESET_PATH
         if not os.path.exists(file_path):
             QMessageBox.information(self, "프리셋 불러오기", "저장된 프리셋이 없습니다.")
             return
@@ -661,3 +678,41 @@ class SettingsView(QWidget):
         self.table.setItem(row, 1, numItem)
         self.table.setItem(row, 2, QTableWidgetItem(path_name))
         self.table.setItem(row, 3, QTableWidgetItem(selected_path))
+    # ================================
+    # 체크된 경로 삭제
+    # ================================
+    def delete_selected_paths(self):
+        """테이블에서 체크박스가 선택된 행들을 삭제하고 번호를 재정렬한다."""
+        rows_to_delete = []
+
+        # 체크된 행 수집
+        for row in range(self.table.rowCount()):
+            widget = self.table.cellWidget(row, 0)
+            if widget:
+                checkbox = widget.findChild(QCheckBox)
+                if checkbox and checkbox.isChecked():
+                    rows_to_delete.append(row)
+
+        if not rows_to_delete:
+            QMessageBox.information(
+                self,
+                "경로 삭제",
+                "삭제할 항목을 선택해주세요."
+            )
+            return
+
+        # 역순으로 행 삭제 (인덱스 꼬임 방지)
+        for row in reversed(rows_to_delete):
+            self.table.removeRow(row)
+
+        # '번호' 컬럼(index 1) 재정렬 및 헤더 체크 상태 초기화
+        for row in range(self.table.rowCount()):
+            num_item = self.table.item(row, 1)
+            if num_item:
+                num_item.setText(str(row + 1))
+
+        # 전체 선택 헤더 체크 해제
+        header = self.table.horizontalHeader()
+        if isinstance(header, CheckBoxHeader):
+            header.checked = False
+            header.viewport().update()

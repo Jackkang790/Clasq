@@ -1,5 +1,5 @@
 # =========================================================
-# [src/utils/search_engine.py]
+# [search_engine.py]
 # DB 검색 및 자연어 의도 라우팅 후속 로직 처리 모듈
 # (불용어 제거, 동의어 사전 확장, 0건 방지 폴백 검색 완결판)
 # =========================================================
@@ -132,7 +132,7 @@ class SearchEngine:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
 
-        query = "SELECT id, file_name, file_path, ai_comment, category FROM files WHERE 1=1"
+        query = "SELECT id, file_name, file_path, ai_comment, category, tags FROM files WHERE 1=1"
         params = []
 
         if keywords:
@@ -149,8 +149,8 @@ class SearchEngine:
                 synonym_conditions = []
                 for syn in synonyms:
                     synonym_conditions.append(
-                        "(file_name LIKE ? OR ai_comment LIKE ? OR category LIKE ?)")
-                    params.extend([f"%{syn}%", f"%{syn}%", f"%{syn}%"])
+                        "(file_name LIKE ? OR ai_comment LIKE ? OR category LIKE ? OR tags LIKE ?)")
+                    params.extend([f"%{syn}%", f"%{syn}%", f"%{syn}%", f"%{syn}%"])
 
                 single_kw_sql = "(" + " OR ".join(synonym_conditions) + ")"
                 keyword_group_sql.append(single_kw_sql)

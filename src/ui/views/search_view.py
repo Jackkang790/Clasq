@@ -22,9 +22,13 @@ _EXTENSION_CANDIDATES = [
 ]
 
 
-class SearchView(QWidget):
+# src/ui/views/search_view.py
 
-    def __init__(self, parent=None, search_engine=None, query_parser=None):
+class SearchView(QWidget):
+    def __init__(self, core=None, parent=None, search_engine=None, query_parser=None):  # core 매개변수 추가
+        super().__init__(parent)
+        self.core = core
+
         """
         search_engine: SearchEngine 인스턴스를 밖에서 주입할 수 있다.
                        (DB 경로를 다르게 쓰거나 테스트용 mock을 넣고 싶을 때)
@@ -32,11 +36,15 @@ class SearchView(QWidget):
                        REQ-011의 실제 LLM 의도 파서가 준비되면 이 인자로 갈아끼우면 된다.
                        시그니처: (text: str) -> dict  (SearchEngine.process_query_result가 먹는 형태)
         """
-        super().__init__(parent)
         self.setAcceptDrops(True)
 
-        self.search_engine = search_engine or SearchEngine()
-        self._query_parser = query_parser or self._parse_natural_query
+        self.search_engine = search_engine or (
+            core.search_engine if core is not None else SearchEngine()
+        )
+        self._query_parser = query_parser or (
+            core.query_parser.parse_user_query
+            if core is not None else self._parse_natural_query
+        )
 
         self.init_ui()
 
@@ -191,6 +199,8 @@ class SearchView(QWidget):
         self.add_message(query, is_user=True)
 
         parsed_data = self._query_parser(query)
+        if parsed_data.get("status") == "SUCCESS":
+            parsed_data = parsed_data["data"]
 
         try:
             result = self.search_engine.process_query_result(parsed_data)

@@ -15,6 +15,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 
+from src.utils.core import ClasqCore
+from ollama_manager import OllamaManager
 from src.ui.views.organize_view import OrganizeView
 from src.ui.views.saved_view import SavedView
 from src.ui.views.search_view import SearchView
@@ -35,6 +37,12 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("AI 파일 관리 시스템")
         self.resize(1100, 700)
+
+        # 코어 시스템 초기화
+        self.core = ClasqCore(
+            db_path=os.path.join(BASE_DIR, "file_manager.db"),
+            text_model=OllamaManager.MODEL_NAME,
+        )
 
         # ---- 프레임리스 창: 상단바를 직접 그릴 것이므로 OS 기본 타이틀바를 없앤다 ----
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
@@ -67,8 +75,8 @@ class MainWindow(QMainWindow):
         # Index 1: 검색
         # Index 2: 정리
         # Index 3: 저장목록
-        self.stacked_widget.addWidget(SettingsView(self.stacked_widget))
-        self.stacked_widget.addWidget(SearchView())
+        self.stacked_widget.addWidget(SettingsView(self.stacked_widget, core=self.core))
+        self.stacked_widget.addWidget(SearchView(core=self.core))
         self.stacked_widget.addWidget(OrganizeView())
         self.stacked_widget.addWidget(SavedView())
 
@@ -170,6 +178,11 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    print("AI 실행 환경을 준비하고 있습니다...")
+    if not OllamaManager.initialize():
+        print("Ollama 초기화에 실패해 프로그램을 시작할 수 없습니다.")
+        return 1
+
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
@@ -181,8 +194,8 @@ def main():
     window = MainWindow()
     window.show()
 
-    sys.exit(app.exec())
+    return app.exec()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

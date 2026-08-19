@@ -34,7 +34,7 @@ from typing import Dict, Any, Tuple # 파이썬 함수 리턴 타입 명시용 �
 
 # 2. 문서 및 이미지 파싱용 외부 제3자 라이브러리
 from pypdf import PdfReader                  # PDF 파일 텍스트 추출
-# from docx import Document                    # Word(.docx) 파일 문단 텍스트 추출
+from docx import Document                    # Word(.docx) 파일 문단 텍스트 추출
 import openpyxl                              # Excel(.xlsx) 셀 데이터 추출
 from PIL import Image, UnidentifiedImageError # 이미지 리사이징 및 손상 검사
 
@@ -454,7 +454,7 @@ class FileAnalyzer:
     def __init__(
         self, 
         ollama_url: str = "http://localhost:11434", 
-        text_model: str = "qwen2.5:3b",
+        text_model: str = "gemma2:9b",
         vision_model: str = "llava"
     ):
         """Ollama API URL 및 사용할 텍스트/비전 LLM 모델명 초기화"""
@@ -519,7 +519,7 @@ Example JSON output format:
 
         try:
             # Ollama 서버 API 호출
-            response = requests.post(self.ollama_api_url, json=payload, timeout=90)
+            response = requests.post(self.ollama_api_url, json=payload, timeout=120)
             response.raise_for_status()
 
             res_data = response.json()
