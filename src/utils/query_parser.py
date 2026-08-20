@@ -4,7 +4,7 @@
 # =========================================================
 import re          # 정규표현식 모듈
 import json        # JSON 데이터 디코딩/인코딩 모듈
-import requests    # 로컬 AI(Ollama) HTTP API 통신 모듈
+from ollama_manager import OllamaManager
 from typing import Dict, Any
 
 
@@ -16,7 +16,7 @@ class SearchQueryParser:
     """
 
     def __init__(self, ollama_url: str = "http://localhost:11434", model: str = "gemma2:9b"):
-        self.ollama_api_url = f"{ollama_url.rstrip('/')}/api/generate"
+        self.ollama_url = ollama_url.rstrip("/")
         self.model = model
 
     def parse_user_query(self, user_text: str) -> Dict[str, Any]:
@@ -70,7 +70,7 @@ Keep your response brief and concise.
         }
 
         try:
-            res = requests.post(self.ollama_api_url, json=payload, timeout=120)
+            res = OllamaManager.request("generate", payload, timeout=120, base_url=self.ollama_url)
             res.raise_for_status()
             
             raw_text = res.json().get("response", "").strip()

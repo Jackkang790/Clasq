@@ -13,6 +13,7 @@ from PySide6.QtCore import QSize
 from PySide6.QtWidgets import QFileDialog
 from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
+from src.utils.workers import FolderScanAndTagWorker
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ASSETS_DIR = PROJECT_ROOT / "assets"
@@ -110,93 +111,120 @@ class SettingsView(QWidget):
         self.setObjectName("settingsView")
         self.init_layout()
         self.init_ui()
+        if self.core:
+            self.load_paths_from_db()
 
     def init_ui(self):
         self.setStyleSheet("""
-            QWidget#settingsView {
-                background-color: #F7F9FC;
-                color: #37352F;
-                font-size: 10pt;
-            }
-            QLabel#title {
-                padding: 2px;
-                font-size: 18pt;
-            }
-            QLabel#toglename {
-                background: transparent;
-            }
-            QPushButton#addRoot {
-                padding: 8px 16px;
-                border-radius: 8px;
-                background-color: #4F84E8;
-                color: white;
-                border: none;
-            }
-            QPushButton#addRoot:hover { background-color: #3F73DC; }
-            QPushButton#addRoot:pressed { background-color: #436FC2; }
+        QWidget#settingsView {
+            background-color: #FFFFFF;
+            color: #2D3436;
+            font-size: 10pt;
+        }
+        QLabel#title {
+            padding: 2px;
+            font-size: 18pt;
+            font-weight: bold;
+            color: #1A1A1A;
+        }
+        QLabel#toglename {
+            background: transparent;
+            color: #2D3436;
+        }
+        
+        /* 메인 포인트 버튼 (추가) */
+        QPushButton#addRoot {
+            padding: 8px 16px;
+            border-radius: 8px;
+            background-color: #6C5CE7;
+            color: white;
+            font-weight: bold;
+            border: none;
+        }
+        QPushButton#addRoot:hover { background-color: #5B4BC4; }
+        QPushButton#addRoot:pressed { background-color: #4A3BB1; }
 
-            QPushButton#savebtn, QPushButton#reloadbtn, QPushButton#clearbtn {
-                padding: 8px 16px;
-                border-radius: 8px;
-                background-color: #E5E7EB;
-                color: #2F3437;
-                border: 1px solid #D9D9D6;
-            }
-            QPushButton#savebtn:hover,
-            QPushButton#reloadbtn:hover,
-            QPushButton#clearbtn:hover { background-color: #D9DCE1; }
-            QPushButton#savebtn:pressed,
-            QPushButton#reloadbtn:pressed,
-            QPushButton#clearbtn:pressed { background-color: #CDD1D8; }
+        /* 보조 버튼 (저장, 새로고침, 초기화) */
+        QPushButton#savebtn, QPushButton#reloadbtn, QPushButton#clearbtn {
+            padding: 8px 16px;
+            border-radius: 8px;
+            background-color: #FFFFFF;
+            color: #2D3436;
+            font-weight: bold;
+            border: 1px solid #EBEBEE;
+        }
+        QPushButton#savebtn:hover,
+        QPushButton#reloadbtn:hover,
+        QPushButton#clearbtn:hover { 
+            background-color: #F0EDFE; 
+            color: #6C5CE7;
+            border-color: #D6CEFC;
+        }
+        QPushButton#savebtn:pressed,
+        QPushButton#reloadbtn:pressed,
+        QPushButton#clearbtn:pressed { 
+            background-color: #E0D9FC; 
+            color: #5B4BC4;
+        }
 
-            QPushButton#backbtn { background: transparent; border: none; }
+        QPushButton#backbtn { background: transparent; border: none; }
 
-            QGroupBox {
-                background-color: #FFFFFF;
-                border: 1px solid #E5E5E5;
-                border-radius: 10px;
-            }
-            QGroupBox#tablebox {
-                background: #F0F8FF;
-                border: 1px solid #D6EAF8;
-                padding: 5px;
-            }
-            QTableWidget {
-                background-color: #FFFFFF;
-                border: 1px solid #E5E5E5;
-                gridline-color: #EEEEEE;
-                border-radius: 8px;
-            }
-            QHeaderView::section {
-                background-color: #D7E7FF;
-                color: #334155;
-                border: none;
-                border-bottom: 1px solid #B8D1F5;
-            }
-            QCheckBox { spacing: 6px; }
-            QCheckBox::indicator {
-                width: 16px; height: 16px;
-                border: 1px solid #B8C2CC;
-                border-radius: 4px;
-                background-color: #FFFFFF;
-            }
-            QCheckBox::indicator:hover { border: 1px solid #5B8DEF; }
-            QCheckBox::indicator:checked {
-                background-color: #4F84E8;
-                border: 1px solid #4F84E8;
-                image: url(__CHECK_ICON__);
-            }
-            QTableWidget QWidget { background: transparent; }
-            QPushButton#delRoot {
-                padding: 8px 16px;
-                border-radius: 8px;
-                background-color: #EF4444;
-                color: white;
-                border: none;
-            }
-            QPushButton#delRoot:hover { background-color: #DC2626; }
-            QPushButton#delRoot:pressed { background-color: #B91C1C; }
-        """.replace("__CHECK_ICON__", (ICONS_DIR / "check.svg").as_posix()))
+        /* 그룹박스 & 테이블 레이아웃 */
+        QGroupBox {
+            background-color: #FFFFFF;
+            border: 1px solid #EBEBEE;
+            border-radius: 10px;
+        }
+        QGroupBox#tablebox {
+            background: #FAFAFC;
+            border: 1px solid #EBEBEE;
+            border-radius: 10px;
+            padding: 5px;
+        }
+        QTableWidget {
+            background-color: #FFFFFF;
+            border: 1px solid #EBEBEE;
+            gridline-color: transparent;
+            border-radius: 8px;
+            color: #2D3436;
+        }
+        QHeaderView::section {
+            background-color: #F8F9FA;
+            color: #636E72;
+            font-weight: bold;
+            border: none;
+            border-bottom: 1px solid #EBEBEE;
+            padding: 6px;
+        }
+
+        /* 체크박스 */
+        QCheckBox { spacing: 6px; color: #2D3436; }
+        QCheckBox::indicator {
+            width: 16px; height: 16px;
+            border: 1px solid #DCDDE1;
+            border-radius: 4px;
+            background-color: #FFFFFF;
+        }
+        QCheckBox::indicator:hover { border: 1px solid #6C5CE7; }
+        QCheckBox::indicator:checked {
+            background-color: #6C5CE7;
+            border: 1px solid #6C5CE7;
+            image: url(__CHECK_ICON__);
+        }
+        QTableWidget QWidget { background: transparent; }
+
+        /* 삭제 버튼 (포인트 레드 유지 및 모던화) */
+        QPushButton#delRoot {
+            padding: 8px 16px;
+            border-radius: 8px;
+            background-color: #EF4444;
+            color: white;
+            font-weight: bold;
+            border: none;
+        }
+        QPushButton#delRoot:hover { background-color: #DC2626; }
+        QPushButton#delRoot:pressed { background-color: #B91C1C; }
+    """.replace("__CHECK_ICON__", (ICONS_DIR / "check.svg").as_posix()))
 
     def toggle_all(self, checked):
         for row in range(self.table.rowCount()):
@@ -261,6 +289,7 @@ class SettingsView(QWidget):
 
         clearbtn = QPushButton('태그부착')
         clearbtn.setObjectName("clearbtn")
+        clearbtn.clicked.connect(self.start_tagging)
 
         delRoot = QPushButton('경로삭제')
         delRoot.setObjectName("delRoot")
@@ -353,11 +382,17 @@ class SettingsView(QWidget):
             )
             for file_path in file_paths:
                 if file_path:
-                    self.add_table_item(os.path.abspath(file_path), True)
+                    selected_path = os.path.abspath(file_path)
+                    self.add_table_item(selected_path, True)
+                    if self.core:
+                        self.core.registry.add_managed_path(selected_path)
         elif action == folder_action:
             folder_path = QFileDialog.getExistingDirectory(self, "폴더 선택")
             if folder_path:
-                self.add_table_item(os.path.abspath(folder_path), True)
+                selected_path = os.path.abspath(folder_path)
+                self.add_table_item(selected_path, True)
+                if self.core:
+                    self.core.registry.add_managed_path(selected_path)
 
     # ================================
     # 파일 탐색
@@ -643,8 +678,10 @@ class SettingsView(QWidget):
         for target in targets:
             selected_path = target.get("path", "")
             
-            if selected_path:
+            if selected_path and os.path.exists(selected_path):
                 self.add_table_item(selected_path, False)
+                if self.core:
+                    self.core.registry.add_managed_path(selected_path)
 
         extensions = selected_preset.get("extensions", [])
         print(f"프리셋 '{preset_name}' 불러오기 완료")
@@ -653,6 +690,47 @@ class SettingsView(QWidget):
     # ================================
     # 메인화면으로 이동
     # ================================
+    def load_paths_from_db(self):
+        """저장된 관리 경로를 현재 UI에 복원합니다."""
+        try:
+            for path in self.core.registry.get_managed_paths():
+                if os.path.exists(path):
+                    self.add_table_item(path, True)
+        except Exception as exc:
+            print(f"관리 경로 로드 실패: {exc}")
+
+    def start_tagging(self):
+        """체크된 기존 경로에 대해 백그라운드 AI 태깅을 실행합니다."""
+        if not self.core:
+            QMessageBox.warning(self, "태그 부착", "코어 시스템이 초기화되지 않았습니다.")
+            return
+        paths = []
+        for row in range(self.table.rowCount()):
+            widget = self.table.cellWidget(row, 0)
+            checkbox = widget.findChild(QCheckBox) if widget else None
+            path_item = self.table.item(row, 3)
+            if checkbox and checkbox.isChecked() and path_item:
+                paths.append(path_item.text().strip())
+        if not paths:
+            QMessageBox.warning(self, "태그 부착", "태그를 부착할 경로를 선택해주세요.")
+            return
+
+        self._tagging_worker = FolderScanAndTagWorker(paths, self.core)
+        self._tagging_worker.progress.connect(self.on_tagging_progress)
+        self._tagging_worker.finished.connect(self.on_tagging_finished)
+        self._tagging_worker.error.connect(self.on_tagging_error)
+        self._tagging_worker.start()
+        QMessageBox.information(self, "태그 부착", "AI 태깅을 시작합니다.")
+
+    def on_tagging_progress(self, message):
+        print(message)
+
+    def on_tagging_finished(self):
+        QMessageBox.information(self, "태그 부착", "AI 태깅이 완료되었습니다.")
+
+    def on_tagging_error(self, message):
+        QMessageBox.critical(self, "태그 부착 오류", message)
+
     def go_search(self):
         self.stacked_widget.setCurrentIndex(1)
 
@@ -660,6 +738,11 @@ class SettingsView(QWidget):
     # 테이블 행 추가
     # ================================
     def add_table_item(self, selected_path, checked=False):
+        selected_path = os.path.abspath(selected_path)
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 3)
+            if item and os.path.normcase(item.text()) == os.path.normcase(selected_path):
+                return
         path_name = os.path.basename(selected_path)
         row = self.table.rowCount()
         self.table.insertRow(row)
@@ -703,6 +786,9 @@ class SettingsView(QWidget):
 
         # 역순으로 행 삭제 (인덱스 꼬임 방지)
         for row in reversed(rows_to_delete):
+            path_item = self.table.item(row, 3)
+            if self.core and path_item:
+                self.core.registry.remove_managed_path(path_item.text())
             self.table.removeRow(row)
 
         # '번호' 컬럼(index 1) 재정렬 및 헤더 체크 상태 초기화

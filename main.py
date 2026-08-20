@@ -77,7 +77,7 @@ class MainWindow(QMainWindow):
         # Index 3: 저장목록
         self.stacked_widget.addWidget(SettingsView(self.stacked_widget, core=self.core))
         self.stacked_widget.addWidget(SearchView(core=self.core))
-        self.stacked_widget.addWidget(OrganizeView())
+        self.stacked_widget.addWidget(OrganizeView(core=self.core))
         self.stacked_widget.addWidget(SavedView())
 
         content_layout.addWidget(self.sidebar)

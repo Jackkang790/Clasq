@@ -28,7 +28,8 @@ import io          # 메모리 내 바이너리 바이트 버퍼 처리 모듈
 import zlib        # HWP 파일 데이터 압축 해제(Decompress) 모듈
 import zipfile     # HWPX/DOCX 등 ZIP 포맷 압축 해제 모듈
 import xml.etree.ElementTree as ET  # XML 구조 파일 텍스트 추출용 모듈
-import requests    # 로컬 AI(Ollama) HTTP API 통신용 라이브러리
+import requests    # 예외 타입 처리용 라이브러리
+from ollama_manager import OllamaManager
 from datetime import datetime       # 타임스탬프(분석 시간) 기록용 모듈
 from typing import Dict, Any, Tuple # 파이썬 함수 리턴 타입 명시용 모듈
 
@@ -458,8 +459,7 @@ class FileAnalyzer:
         vision_model: str = "llava"
     ):
         """Ollama API URL 및 사용할 텍스트/비전 LLM 모델명 초기화"""
-        self.ollama_api_url = f"{ollama_url.rstrip('/')}/api/generate"
-        self.ollama_chat_url = f"{ollama_url.rstrip('/')}/api/chat"
+        self.ollama_url = ollama_url.rstrip("/")
         self.text_model = text_model
         self.vision_model = vision_model
 
@@ -519,7 +519,7 @@ Example JSON output format:
 
         try:
             # Ollama 서버 API 호출
-            response = requests.post(self.ollama_api_url, json=payload, timeout=120)
+            response = OllamaManager.request("generate", payload, timeout=120, base_url=self.ollama_url)
             response.raise_for_status()
 
             res_data = response.json()
@@ -608,7 +608,7 @@ Example JSON output format:
         }
 
         try:
-            response = requests.post(self.ollama_chat_url, json=payload, timeout=180)
+            response = OllamaManager.request("chat", payload, timeout=180, base_url=self.ollama_url)
             response.raise_for_status()
 
             res_data = response.json()

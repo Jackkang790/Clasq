@@ -1,4 +1,4 @@
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
 # 신규 위젯 임포트
 from src.ui.widgets.fileupload_view import FileUploadView
 from src.utils.search_engine import SearchEngine
+from src.utils.workers import FolderScanAndTagWorker
 
 # 문장에서 확장자 필터를 뽑아낼 때 쓰는 후보 목록.
 # SearchEngine.STOP_WORDS와 겹치는 확장자 표기를 그대로 재사용한다.
@@ -21,6 +22,21 @@ _EXTENSION_CANDIDATES = [
     "png", "jpg", "jpeg", "gif", "mp3", "mp4",
 ]
 
+class QueryProcessWorker(QThread):
+    """Ollama 기반 자연어 검색을 UI 스레드 밖에서 처리합니다."""
+    finished = Signal(dict)
+    error = Signal(str)
+
+    def __init__(self, core, query, parent=None):
+        super().__init__(parent)
+        self.core = core
+        self.query = query
+
+    def run(self):
+        try:
+            self.finished.emit(self.core.process_user_query(self.query))
+        except Exception as exc:
+            self.error.emit(str(exc))
 
 # src/ui/views/search_view.py
 
@@ -185,43 +201,54 @@ class SearchView(QWidget):
         self.process_query(query)
 
     def on_file_attached(self, file_path: str):
-        # 파일이 들어왔을 때 화면 전환 및 메시지 출력
         if self.stacked_layout.currentIndex() == 0:
             self.stacked_layout.setCurrentIndex(1)
-
         self.add_message(f"📎 [파일 첨부]: {file_path}", is_user=True)
+        if self.core is None:
+            self.add_message(f"'{file_path}' 파일을 분석할 준비가 되었습니다.", is_user=False)
+            return
         self.add_message(f"'{file_path}' 파일을 분석 중입니다...", is_user=False)
-
-    # -----------------------------------------------------------------
-    # 실제 검색 연결부: 자연어 -> parser -> SearchEngine -> 채팅 UI 렌더링
-    # -----------------------------------------------------------------
+        self._file_worker = FolderScanAndTagWorker([file_path], self.core)
+        self._file_worker.finished.connect(
+            lambda: self.add_message("파일 분석과 태그 저장이 완료되었습니다.", is_user=False)
+        )
+        self._file_worker.error.connect(self._on_query_error)
+        self._file_worker.start()
     def process_query(self, query: str):
         self.add_message(query, is_user=True)
+        if self.core is not None:
+            self._query_worker = QueryProcessWorker(self.core, query, self)
+            self._query_worker.finished.connect(self._on_query_result)
+            self._query_worker.error.connect(self._on_query_error)
+            self._query_worker.start()
+            return
 
+        # 코어가 없는 단위 테스트·미리보기 상황에서는 기존 동기 경로를 유지합니다.
         parsed_data = self._query_parser(query)
         if parsed_data.get("status") == "SUCCESS":
             parsed_data = parsed_data["data"]
-
         try:
-            result = self.search_engine.process_query_result(parsed_data)
+            self._display_query_result(self.search_engine.process_query_result(parsed_data))
         except Exception as exc:
-            # DB 파일/테이블이 아직 없는 초기 상태 등을 대비한 방어 처리.
-            # (REQ-006과 동일하게, 백엔드 연결 실패 시 앱이 죽지 않고 안내만 하도록.)
-            self.add_message(f"⚠️ 검색 중 오류가 발생했습니다: {exc}", is_user=False, kind="error")
-            return
+            self._on_query_error(str(exc))
 
+    def _on_query_result(self, result):
+        self._display_query_result(result)
+
+    def _on_query_error(self, message):
+        self.add_message(f"⚠️ 검색 중 오류가 발생했습니다: {message}", is_user=False, kind="error")
+
+    def _display_query_result(self, result):
         action = result.get("action")
         message = result.get("message", "")
         data = result.get("data", [])
-
         if action == "UPDATE_TABLE":
             self.add_message(message, is_user=False)
             self._render_search_results(data)
         elif action == "SHOW_CHAT":
             self.add_message(message, is_user=False)
-        else:  # ERROR
-            self.add_message(f"⚠️ {message}", is_user=False, kind="error")
-
+        else:
+            self.add_message(f"⚠️ {message or '요청을 처리하지 못했습니다.'}", is_user=False, kind="error")
     def _render_search_results(self, rows):
         """
         SearchEngine이 돌려주는 (id, file_name, file_path, ai_comment, category) 튜플 목록을
@@ -229,7 +256,7 @@ class SearchView(QWidget):
         """
         MAX_SHOWN = 10
         for row in rows[:MAX_SHOWN]:
-            _id, file_name, file_path, ai_comment, category = row
+            _id, file_name, file_path, ai_comment, category, *_ = row
             lines = [f"📄 {file_name}"]
             if category:
                 lines.append(f"분류: {category}")

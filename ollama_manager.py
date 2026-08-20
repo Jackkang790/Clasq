@@ -297,6 +297,17 @@ class OllamaManager:
             return False
 
     # =====================================================
+    # 공용 API 호출
+    # =====================================================
+
+    @classmethod
+    def request(cls, endpoint, payload, timeout=120, base_url=None):
+        """Ollama REST 호출의 단일 진입점입니다."""
+        url = (base_url or cls.OLLAMA_URL).rstrip("/")
+        response = requests.post(f"{url}/api/{endpoint.lstrip('/')}", json=payload, timeout=timeout)
+        response.raise_for_status()
+        return response
+    # =====================================================
     # ★ Ollama 실제 모델 테스트
     # =====================================================
 

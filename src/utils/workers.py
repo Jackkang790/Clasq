@@ -25,15 +25,21 @@ class FolderScanAndTagWorker(QThread):
             )
             files_to_process = []
 
-            for folder_path in self.folder_paths:
-                for root, _, files in os.walk(folder_path):
+            for target_path in self.folder_paths:
+                clean_target = os.path.abspath(os.path.normpath(target_path))
+                if os.path.isfile(clean_target):
+                    if clean_target.lower().endswith(valid_extensions):
+                        files_to_process.append(clean_target)
+                    continue
+                if not os.path.isdir(clean_target):
+                    continue
+                for root, _, files in os.walk(clean_target):
                     for file in files:
                         if file.lower().endswith(valid_extensions):
                             full_path = os.path.join(root, file)
-                            clean_path = os.path.abspath(os.path.normpath(
-                                full_path.replace('￥', '/').replace('\\', '/')))
-                            files_to_process.append(clean_path)
+                            files_to_process.append(os.path.abspath(os.path.normpath(full_path)))
 
+            files_to_process = list(dict.fromkeys(files_to_process))
             if not files_to_process:
                 self.error.emit("스캔할 지원 파일이 지정된 경로에 없습니다.")
                 return

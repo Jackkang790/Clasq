@@ -3,7 +3,8 @@
 # 통합 코어 모듈 - 파일 관리 시스템의 핵심 기능을 결합
 # =========================================================
 import os
-from typing import Dict, Any
+import shutil
+from typing import Dict, Any, List
 
 from .file_pipeline import TextExtractor, FileAnalyzer
 from .query_parser import SearchQueryParser
@@ -241,6 +242,133 @@ class ClasqCore:
             if self.registry._bulk_conn is None:
                 conn.close()
 
+    # ---------------------------------------------------------
+    # [유스케이스 5] 태그 기반 파일 정리
+    # ---------------------------------------------------------
+    def scan_directory_files(self, directory: str) -> List[Dict[str, Any]]:
+        """선택한 디렉터리에서 지원 형식의 파일 목록을 반환합니다."""
+        valid_extensions = (
+            ".txt", ".pdf", ".docx", ".xlsx", ".pptx", ".hwp", ".hwpx",
+            ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif",
+            ".mp3", ".mp4", ".wav", ".m4a", ".mkv", ".avi",
+        )
+        directory = self._normalize_path(directory)
+        if not os.path.isdir(directory):
+            return []
+
+        files: List[Dict[str, Any]] = []
+        for root, _, names in os.walk(directory):
+            for name in names:
+                if name.lower().endswith(valid_extensions):
+                    files.append({
+                        "file_name": name,
+                        "file_path": os.path.join(root, name),
+                        "tags": [],
+                        "category": "#미분류",
+                    })
+        return files
+
+    def get_files_for_organize(self) -> List[Dict[str, Any]]:
+        """태그가 있는 DB 파일을 정리 화면용 데이터로 조회합니다."""
+        conn = self.registry._get_conn()
+        try:
+            rows = conn.execute(
+                """
+                SELECT id, file_name, file_path, tags, category
+                FROM files
+                WHERE tags IS NOT NULL AND tags != ''
+                ORDER BY category, file_name
+                """
+            ).fetchall()
+            return [
+                {
+                    "id": row[0],
+                    "file_name": row[1],
+                    "file_path": row[2],
+                    "tags": row[3].split(",") if row[3] else [],
+                    "category": row[4],
+                }
+                for row in rows
+            ]
+        finally:
+            if self.registry._bulk_conn is None:
+                conn.close()
+
+    @staticmethod
+    def group_files_by_tags(files: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+        """첫 번째 태그를 기준으로 파일을 그룹화합니다."""
+        groups: Dict[str, List[Dict[str, Any]]] = {}
+        for file_info in files:
+            tags = file_info.get("tags", [])
+            if not tags:
+                continue
+            tag_name = tags[0].strip().lstrip("#").strip()
+            if tag_name:
+                groups.setdefault(tag_name, []).append(file_info)
+        return groups
+
+    @staticmethod
+    def _available_destination(directory: str, file_name: str) -> str:
+        """기존 파일을 덮어쓰지 않는 이동 대상 경로를 만듭니다."""
+        candidate = os.path.join(directory, file_name)
+        if not os.path.exists(candidate):
+            return candidate
+        stem, extension = os.path.splitext(file_name)
+        index = 1
+        while os.path.exists(candidate):
+            candidate = os.path.join(directory, f"{stem} ({index}){extension}")
+            index += 1
+        return candidate
+
+    def organize_files(
+        self, groups: Dict[str, List[Dict[str, Any]]], base_path: str
+    ) -> Dict[str, Any]:
+        """태그별 폴더로 파일을 이동하고 DB 경로를 함께 갱신합니다."""
+        base_path = self._normalize_path(base_path)
+        if not os.path.isdir(base_path):
+            return {"success": False, "message": f"기본 경로가 존재하지 않습니다: {base_path}", "errors": []}
+
+        conn = self.registry._get_conn()
+        owns_conn = self.registry._bulk_conn is None
+        moved_files: List[Dict[str, str]] = []
+        errors: List[str] = []
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            for tag_name, files in groups.items():
+                safe_tag = "".join(char for char in tag_name if char not in r'\\/:*?\"<>|').strip()
+                if not safe_tag:
+                    errors.append(f"사용할 수 없는 태그 이름: {tag_name}")
+                    continue
+                target_dir = os.path.join(base_path, safe_tag)
+                os.makedirs(target_dir, exist_ok=True)
+                for file_info in files:
+                    old_path = self._normalize_path(file_info.get("file_path", ""))
+                    if not os.path.isfile(old_path):
+                        errors.append(f"파일 없음: {old_path}")
+                        continue
+                    new_path = self._available_destination(target_dir, os.path.basename(old_path))
+                    try:
+                        shutil.move(old_path, new_path)
+                        conn.execute(
+                            "UPDATE files SET file_name = ?, file_path = ?, source_path = ? WHERE id = ?",
+                            (os.path.basename(new_path), new_path, target_dir, file_info["id"]),
+                        )
+                        moved_files.append({"old_path": old_path, "new_path": new_path, "tag": safe_tag})
+                    except OSError as exc:
+                        errors.append(f"이동 실패 ({old_path}): {exc}")
+            conn.commit()
+            return {
+                "success": True,
+                "message": f"파일 정리 완료: {len(moved_files)}개 파일 이동, {len(errors)}개 오류",
+                "moved_files": moved_files,
+                "errors": errors,
+            }
+        except Exception as exc:
+            conn.rollback()
+            return {"success": False, "message": f"파일 정리 실패: {exc}", "errors": [str(exc)]}
+        finally:
+            if owns_conn:
+                conn.close()
 
 # =========================================================
 # 하위 호환성을 위한 별칭 클래스

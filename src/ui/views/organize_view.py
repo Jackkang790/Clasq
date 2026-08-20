@@ -285,50 +285,136 @@ class _GroupedScreen(QWidget):
 # 외부에 노출되는 진짜 뷰: OrganizeView
 # ---------------------------------------------------------------------------
 class OrganizeView(QWidget):
-    """
-    MainWindow의 stacked_widget(index 2)에 들어가는 '정리하기' 화면.
-    내부적으로 테이블 뷰 <-> 자동 그룹화 뷰를 전환한다.
-    """
+    """기존 정리 UI에 DB·AI 태깅·실제 파일 이동 기능을 연결하는 뷰."""
 
-    def __init__(self, parent=None):
+    def __init__(self, core=None, parent=None):
         super().__init__(parent)
+        self.core = core
+        self.grouped_files = {}
         self.setObjectName("organizeView")
-        self.setStyleSheet(FALLBACK_QSS)  # 전역 light.qss가 없을 때를 위한 최소 폴백
+        self.setStyleSheet(FALLBACK_QSS)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-
         self._inner_stack = QStackedWidget()
         self._table_screen = _FileTableScreen()
         self._grouped_screen = _GroupedScreen()
-        self._inner_stack.addWidget(self._table_screen)    # inner index 0
-        self._inner_stack.addWidget(self._grouped_screen)  # inner index 1
+        self._inner_stack.addWidget(self._table_screen)
+        self._inner_stack.addWidget(self._grouped_screen)
         layout.addWidget(self._inner_stack)
 
-        self._table_screen.autoOrganizeRequested.connect(self._show_grouped)
+        self._table_screen.autoOrganizeRequested.connect(self._on_auto_organize)
         self._table_screen.addPathRequested.connect(self._on_path_added)
         self._grouped_screen.editRequested.connect(self._show_table)
         self._grouped_screen.organizeConfirmed.connect(self._on_organize_confirmed)
+        if self.core:
+            self._load_files_from_db()
 
-    # ---- 화면 전환 ----
     def _show_grouped(self):
         self._inner_stack.setCurrentWidget(self._grouped_screen)
 
     def _show_table(self):
         self._inner_stack.setCurrentWidget(self._table_screen)
 
-    # ---- 이벤트 핸들러 (실제 로직은 추후 컨트롤러/서비스로 교체) ----
+    def _load_files_from_db(self):
+        try:
+            rows = [
+                (file_info["file_name"], ", ".join(file_info["tags"]), file_info["file_path"])
+                for file_info in self.core.get_files_for_organize()
+            ]
+            self._table_screen.set_rows(rows)
+        except Exception as exc:
+            QMessageBox.critical(self, "파일 목록 오류", f"파일 목록을 불러오지 못했습니다.\n{exc}")
+
     def _on_path_added(self, path):
-        QMessageBox.information(self, "경로 추가됨", f"다음 폴더가 정리 대상에 추가되었습니다:\n{path}")
+        if not self.core:
+            QMessageBox.warning(self, "경로 추가", "코어 시스템이 초기화되지 않았습니다.")
+            return
+        try:
+            self.core.registry.add_managed_path(path)
+            files = self.core.scan_directory_files(path)
+            if not files:
+                QMessageBox.information(self, "경로 추가", "지원되는 파일이 없는 경로입니다.")
+                return
+            current_rows = [
+                tuple(self._table_screen.table.item(row, column).text() for column in range(3))
+                for row in range(self._table_screen.table.rowCount())
+            ]
+            known_paths = {row[2] for row in current_rows}
+            current_rows.extend(
+                (file_info["file_name"], "", file_info["file_path"])
+                for file_info in files if file_info["file_path"] not in known_paths
+            )
+            self._table_screen.set_rows(current_rows)
+            answer = QMessageBox.question(
+                self, "AI 태깅", f"{len(files)}개 파일을 찾았습니다. 지금 AI 태깅을 진행할까요?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if answer == QMessageBox.Yes:
+                self._start_ai_tagging([path])
+        except Exception as exc:
+            QMessageBox.critical(self, "경로 추가 오류", f"파일을 읽는 중 오류가 발생했습니다.\n{exc}")
+
+    def _start_ai_tagging(self, paths):
+        from src.utils.workers import FolderScanAndTagWorker
+        self._tagging_worker = FolderScanAndTagWorker(paths, self.core)
+        self._tagging_worker.progress.connect(lambda message: print(message))
+        self._tagging_worker.finished.connect(self._on_tagging_finished)
+        self._tagging_worker.error.connect(self._on_tagging_error)
+        self._tagging_worker.start()
+        QMessageBox.information(self, "AI 태깅", "AI 태깅을 시작합니다.")
+
+    def _on_tagging_finished(self):
+        self._load_files_from_db()
+        QMessageBox.information(self, "AI 태깅", "AI 태깅이 완료되었습니다.")
+
+    def _on_tagging_error(self, message):
+        QMessageBox.critical(self, "AI 태깅 오류", message)
+
+    def _on_auto_organize(self):
+        if not self.core:
+            QMessageBox.warning(self, "자동 정리", "코어 시스템이 초기화되지 않았습니다.")
+            return
+        try:
+            self.grouped_files = self.core.group_files_by_tags(self.core.get_files_for_organize())
+            if not self.grouped_files:
+                QMessageBox.information(self, "정리 대상 없음", "태그가 있는 파일이 없습니다. 먼저 태그를 부착해주세요.")
+                return
+            groups_ui = []
+            for tag_name, files in self.grouped_files.items():
+                cards = []
+                for file_info in files[:10]:
+                    file_name = file_info["file_name"]
+                    extension = os.path.splitext(file_name)[1].lower()
+                    kind = "image" if extension in {".jpg", ".jpeg", ".png", ".gif", ".webp"} else "doc" if extension in {".txt", ".doc", ".docx", ".pdf"} else "default"
+                    cards.append((kind, file_name[:15] + "..." if len(file_name) > 15 else file_name))
+                groups_ui.append((f"{tag_name} 폴더", cards))
+            self._grouped_screen.set_groups(groups_ui)
+            self._show_grouped()
+        except Exception as exc:
+            QMessageBox.critical(self, "자동 정리 오류", str(exc))
 
     def _on_organize_confirmed(self):
-        QMessageBox.information(self, "정리 완료", "선택한 계획대로 파일 정리가 완료되었습니다.")
+        if not self.core or not self.grouped_files:
+            QMessageBox.warning(self, "파일 정리", "정리할 그룹 정보가 없습니다.")
+            return
+        base_path = QFileDialog.getExistingDirectory(self, "파일을 정리할 기본 폴더 선택")
+        if not base_path:
+            return
+        result = self.core.organize_files(self.grouped_files, base_path)
+        if result["success"]:
+            message = f"이동된 파일: {len(result.get('moved_files', []))}개"
+            errors = result.get("errors", [])
+            if errors:
+                message += f"\n오류: {len(errors)}개\n" + "\n".join(errors[:5])
+            QMessageBox.information(self, "정리 완료", message)
+            self._load_files_from_db()
+            self._show_table()
+        else:
+            QMessageBox.critical(self, "정리 실패", result.get("message", "알 수 없는 오류"))
 
-    # ---- 외부(컨트롤러)에서 실데이터 주입할 때 쓰는 진입점 ----
     def set_file_rows(self, rows):
-        """rows: list[tuple(파일명, 태그, 파일경로)]"""
         self._table_screen.set_rows(rows)
 
     def set_grouped_result(self, groups):
-        """groups: list[tuple(폴더명, list[tuple(kind, label)])]"""
         self._grouped_screen.set_groups(groups)
