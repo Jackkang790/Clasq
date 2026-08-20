@@ -396,7 +396,10 @@ class ClasqCore:
         finally:
             if owns_conn:
                 conn.close()
-
+    def get_all_files(self) -> List[Dict[str, Any]]:
+        """저장 목록 화면용 - DB의 모든 파일 조회"""
+        return self.registry.get_all_files()
+     
 # =========================================================
 # 하위 호환성을 위한 별칭 클래스
 # =========================================================

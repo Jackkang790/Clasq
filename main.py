@@ -78,7 +78,7 @@ class MainWindow(QMainWindow):
         self.stacked_widget.addWidget(SettingsView(self.stacked_widget, core=self.core))
         self.stacked_widget.addWidget(SearchView(core=self.core))
         self.stacked_widget.addWidget(OrganizeView(core=self.core))
-        self.stacked_widget.addWidget(SavedView())
+        self.stacked_widget.addWidget(SavedView(core=self.core))
 
         content_layout.addWidget(self.sidebar)
         content_layout.addWidget(self.stacked_widget)

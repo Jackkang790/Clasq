@@ -15,17 +15,18 @@ from PySide6.QtWidgets import (
 
 class SavedView(QWidget):
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, core=None):
         super().__init__(parent)
+        self.core = core
+        self._original_rows = {}  # row -> (file_id, file_name, tags)
         self.init_ui()
+        self.load_data()
 
     def init_ui(self):
-        # 전체 메인 레이아웃
         main_layout = QVBoxLayout(self)
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(15)
 
-        # 1. 상단 백그라운드 안내 배너 (퍼플 연한 배경 스타일)
         notice_banner = QLabel("Ctrl + 1 을 누르면 백그라운드에서 실행됩니다")
         notice_banner.setObjectName("noticeBanner")
         notice_banner.setAlignment(Qt.AlignCenter)
@@ -41,7 +42,6 @@ class SavedView(QWidget):
         """)
         main_layout.addWidget(notice_banner)
 
-        # 2. 헤더 영역 (타이틀 + 수정하기 버튼)
         header_layout = QHBoxLayout()
 
         title_label = QLabel("태그 저장 목록")
@@ -51,7 +51,6 @@ class SavedView(QWidget):
             color: #1A1A1A;
         """)
 
-        # 이미지의 '자동 정리하기' 메인 버튼 스타일 적용
         self.edit_btn = QPushButton("수정하기")
         self.edit_btn.setFixedSize(110, 38)
         self.edit_btn.setStyleSheet("""
@@ -75,45 +74,28 @@ class SavedView(QWidget):
         header_layout.addWidget(title_label)
         header_layout.addStretch()
         header_layout.addWidget(self.edit_btn)
-
         main_layout.addLayout(header_layout)
 
-        # 3. 저장 태그 리스트 (QTableWidget)
         self.table = QTableWidget()
-        self.table.setColumnCount(3)
-        self.table.setRowCount(3)
-        self.table.setHorizontalHeaderLabels(["파일명", "태그", "파일 경로"])
-
-        # 인라인 편집 설정
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["파일명", "태그", "파일 경로", ""])
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked)
 
-        # 더미 데이터 세팅
-        dummy_data = [
-            ("프로젝트_보고서.pdf", "업무, PDF", "C:/Documents/프로젝트_보고서.pdf"),
-            ("이미지_에셋.zip", "디자인, 원본", "D:/Assets/이미지_에셋.zip"),
-            ("결산_마감.xlsx", "재무, 2026", "C:/Work/결산_마감.xlsx"),
-        ]
+        # 행 높이 기본값 설정 (버튼 및 텍스트 편집 상자 깨짐 방지)
+        self.table.verticalHeader().setDefaultSectionSize(48)
 
-        for row, (filename, tag, path) in enumerate(dummy_data):
-            item_filename = QTableWidgetItem(filename)
-            item_tag = QTableWidgetItem(tag)
-            item_path = QTableWidgetItem(path)
-
-            item_filename.setTextAlignment(Qt.AlignCenter)
-            item_tag.setTextAlignment(Qt.AlignCenter)
-            item_path.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-
-            self.table.setItem(row, 0, item_filename)
-            self.table.setItem(row, 1, item_tag)
-            self.table.setItem(row, 2, item_path)
-
-        # 테이블 헤더 디자인 및 레이아웃 설정
+        # 열 너비 조절 모드 설정
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Interactive)
         header.setSectionResizeMode(1, QHeaderView.Interactive)
         header.setSectionResizeMode(2, QHeaderView.Stretch)
+        header.setSectionResizeMode(3, QHeaderView.Fixed)
+        
+        # 각 열의 기본 최소 너비 설정
+        self.table.setColumnWidth(0, 180)
+        self.table.setColumnWidth(1, 140)
+        self.table.setColumnWidth(3, 90)
 
-        # 이미지 디자인 반영 (둥근 테두리, 연보라 헤더, 선택/포커스 행 스타일)
         self.table.setStyleSheet("""
             QTableWidget {
                 background-color: #FFFFFF;
@@ -128,12 +110,12 @@ class SavedView(QWidget):
                 color: #636E72;
                 font-size: 13px;
                 font-weight: bold;
-                padding: 10px;
+                padding: 8px 12px;
                 border: none;
                 border-bottom: 1px solid #EBEBEE;
             }
             QTableWidget::item {
-                padding: 8px;
+                padding: 6px 10px;
                 border-bottom: 1px solid #F1F2F6;
             }
             QTableWidget::item:selected {
@@ -144,12 +126,100 @@ class SavedView(QWidget):
                 background-color: #E0D9FC;
                 color: #000000;
             }
+            QLineEdit {
+                border: 1px solid #6C5CE7;
+                border-radius: 4px;
+                padding: 2px 4px;
+                background-color: #FFFFFF;
+            }
         """)
 
         main_layout.addWidget(self.table, 1)
 
-    # 4. 수정하기 버튼 클릭 시 확인 팝업 및 저장 로직
+    # ------------------------------------------------------------------
+    # DB -> 테이블 로드
+    # ------------------------------------------------------------------
+    def load_data(self):
+        """core.get_all_files()로 실제 DB 데이터를 읽어와 테이블을 채운다."""
+        self.table.setRowCount(0)
+        self._original_rows.clear()
+
+        if self.core is None:
+            return
+
+        try:
+            files = self.core.get_all_files()
+        except Exception as e:
+            QMessageBox.warning(self, "조회 실패", f"DB 조회 중 오류가 발생했습니다: {e}")
+            return
+
+        self.table.setRowCount(len(files))
+        for row, file_info in enumerate(files):
+            file_id = file_info["id"]
+            file_name = file_info["file_name"]
+            tags = file_info["tags"]
+            file_path = file_info["file_path"]
+
+            item_filename = QTableWidgetItem(file_name)
+            item_tag = QTableWidgetItem(tags)
+            item_path = QTableWidgetItem(file_path)
+
+            item_filename.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            item_tag.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            item_path.setTextAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+            item_filename.setData(Qt.UserRole, file_id)
+            item_path.setFlags(item_path.flags() & ~Qt.ItemIsEditable)
+
+            self.table.setItem(row, 0, item_filename)
+            self.table.setItem(row, 1, item_tag)
+            self.table.setItem(row, 2, item_path)
+
+            # 삭제 버튼을 정중앙에 배치하기 위한 컨테이너
+            btn_container = QWidget()
+            btn_layout = QHBoxLayout(btn_container)
+            btn_layout.setContentsMargins(4, 0, 4, 0)
+            btn_layout.setAlignment(Qt.AlignCenter)
+
+            delete_btn = QPushButton("삭제")
+            # 폭을 64px로 확대하고 고정 높이 대신 min/max 설정
+            delete_btn.setFixedWidth(64)
+            delete_btn.setFixedHeight(30)
+            
+            delete_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #FFFFFF;
+                    color: #E74C3C;
+                    font-size: 12px;
+                    font-weight: bold;
+                    border: 1px solid #E74C3C;
+                    border-radius: 6px;
+                    padding: 0px;  /* 패딩을 0으로 설정하여 내부 글자 여백 확보 */
+                    margin: 0px;
+                }
+                QPushButton:hover {
+                    background-color: #FDEDEC;
+                }
+                QPushButton:pressed {
+                    background-color: #FADBD8;
+                }
+            """)
+            delete_btn.clicked.connect(
+                lambda checked=False, fid=file_id, fname=file_name: self.on_delete_file(fid, fname)
+            )
+            btn_layout.addWidget(delete_btn)
+
+            self.table.setCellWidget(row, 3, btn_container)
+            self._original_rows[row] = (file_id, file_name, tags)
+
+    # ------------------------------------------------------------------
+    # 수정하기 버튼 클릭 시 확인 팝업 및 저장 로직
+    # ------------------------------------------------------------------
     def on_save_changes(self):
+        if self.core is None:
+            QMessageBox.warning(self, "오류", "DB에 연결되어 있지 않습니다.")
+            return
+
         reply = QMessageBox.question(
             self,
             "수정 확인",
@@ -157,21 +227,67 @@ class SavedView(QWidget):
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
-
         if reply == QMessageBox.Yes:
             self.save_to_db()
 
     def save_to_db(self):
-        updated_data = []
-        for row in range(self.table.rowCount()):
-            filename = (
-                self.table.item(row, 0).text() if self.table.item(row, 0) else ""
-            )
-            tag = self.table.item(row, 1).text() if self.table.item(row, 1) else ""
-            path = (
-                self.table.item(row, 2).text() if self.table.item(row, 2) else ""
-            )
-            updated_data.append((filename, tag, path))
+        errors = []
+        changed_count = 0
 
-        print(f"[DB 저장 완료] 업데이트된 목록: {updated_data}")
-        QMessageBox.information(self, "완료", "성공적으로 DB에 반영되었습니다.")
+        for row in range(self.table.rowCount()):
+            if row not in self._original_rows:
+                continue
+            file_id, old_name, old_tags = self._original_rows[row]
+
+            item_filename = self.table.item(row, 0)
+            item_tag = self.table.item(row, 1)
+
+            new_name = item_filename.text().strip() if item_filename else old_name
+            new_tags = item_tag.text().strip() if item_tag else old_tags
+
+            # 1) 파일명이 바뀌었으면 실제 파일 이름도 함께 변경
+            if new_name and new_name != old_name:
+                if self.core.registry.rename_file(file_id, new_name):
+                    changed_count += 1
+                else:
+                    errors.append(f"'{old_name}' 이름 변경 실패")
+
+            # 2) 태그가 바뀌었으면 DB에 반영
+            if new_tags != old_tags:
+                if self.core.registry.update_tags(file_id, new_tags):
+                    changed_count += 1
+                else:
+                    errors.append(f"'{new_name}' 태그 업데이트 실패")
+
+        self.load_data()
+
+        if errors:
+            QMessageBox.warning(
+                self, "일부 저장 실패",
+                "다음 항목 처리 중 오류가 발생했습니다:\n" + "\n".join(errors),
+            )
+        else:
+            QMessageBox.information(
+                self, "완료", f"성공적으로 DB에 반영되었습니다. ({changed_count}건 변경)"
+            )
+
+    def on_delete_file(self, file_id, file_name):
+        if self.core is None:
+            QMessageBox.warning(self, "오류", "DB에 연결되어 있지 않습니다.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "삭제 확인",
+            f"'{file_name}' 파일을 실제 디스크와 DB에서 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        if self.core.registry.delete_file(file_id):
+            self.load_data()
+            QMessageBox.information(self, "완료", f"'{file_name}' 파일이 삭제되었습니다.")
+        else:
+            QMessageBox.warning(self, "삭제 실패", f"'{file_name}' 파일 삭제 중 오류가 발생했습니다.")
