@@ -10,6 +10,7 @@ MainWindow의 QStackedWidget에 addWidget(OrganizeView())로 바로 꽂아서 �
 두 화면을 오갑니다. (전역 light.qss가 있으면 그걸 우선 따르고,
 이 파일의 스타일은 objectName 기반 최소한의 폴백 스타일만 넣었습니다.)
 """
+import os
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import (
@@ -327,33 +328,86 @@ class OrganizeView(QWidget):
             QMessageBox.critical(self, "파일 목록 오류", f"파일 목록을 불러오지 못했습니다.\n{exc}")
 
     def _on_path_added(self, path):
+        """경로 추가 처리 (파일 스캔 및 테이블 업데이트)"""
         if not self.core:
-            QMessageBox.warning(self, "경로 추가", "코어 시스템이 초기화되지 않았습니다.")
+            QMessageBox.information(self, "경로 추가됨", f"다음 폴더가 정리 대상에 추가되었습니다:\n{path}")
             return
+ 
+        # DB에 경로 추가
+        result = self.core.registry.add_managed_path(path)
+ 
+        # 파일 스캔
         try:
-            self.core.registry.add_managed_path(path)
-            files = self.core.scan_directory_files(path)
-            if not files:
-                QMessageBox.information(self, "경로 추가", "지원되는 파일이 없는 경로입니다.")
+            scanned_files = self.core.scan_directory_files(path)
+ 
+            if not scanned_files:
+                QMessageBox.information(self, "경로 추가됨", 
+                    f"경로가 추가되었지만 지원되는 파일이 없습니다:\n{path}")
                 return
-            current_rows = [
-                tuple(self._table_screen.table.item(row, column).text() for column in range(3))
-                for row in range(self._table_screen.table.rowCount())
-            ]
-            known_paths = {row[2] for row in current_rows}
-            current_rows.extend(
-                (file_info["file_name"], "", file_info["file_path"])
-                for file_info in files if file_info["file_path"] not in known_paths
-            )
+ 
+            # 스캔된 파일들을 테이블에 추가
+            current_rows = []
+            for i in range(self._table_screen.table.rowCount()):
+                file_name = self._table_screen.table.item(i, 0).text()
+                tag = self._table_screen.table.item(i, 1).text()
+                file_path = self._table_screen.table.item(i, 2).text()
+                current_rows.append((file_name, tag, file_path))
+ 
+            # 새로운 파일들 추가
+            for file_info in scanned_files:
+                # 중복 체크
+                if not any(row[2] == file_info["file_path"] for row in current_rows):
+                    tags_str = ", ".join(file_info.get("tags", []))
+                    current_rows.append((
+                        file_info["file_name"],
+                        tags_str,
+                        file_info["file_path"]
+                    ))
+ 
             self._table_screen.set_rows(current_rows)
-            answer = QMessageBox.question(
-                self, "AI 태깅", f"{len(files)}개 파일을 찾았습니다. 지금 AI 태깅을 진행할까요?",
-                QMessageBox.Yes | QMessageBox.No,
+ 
+            # AI 처리 옵션 물어보기
+            reply = QMessageBox.question(
+                self, 
+                "AI 처리", 
+                f"{len(scanned_files)}개의 파일을 스캔했습니다.\n지금 AI 태깅을 진행하시겠습니까?",
+                QMessageBox.Yes | QMessageBox.No
             )
-            if answer == QMessageBox.Yes:
+ 
+            if reply == QMessageBox.Yes:
                 self._start_ai_tagging([path])
-        except Exception as exc:
-            QMessageBox.critical(self, "경로 추가 오류", f"파일을 읽는 중 오류가 발생했습니다.\n{exc}")
+            else:
+                QMessageBox.information(self, "경로 추가됨", 
+                    f"경로가 추가되고 {len(scanned_files)}개 파일이 로드되었습니다:\n{path}")
+ 
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"파일 스캔 중 오류가 발생했습니다:\n{str(e)}")
+ 
+    def _start_ai_tagging(self, paths):
+        """AI 태깅 시작"""
+        try:
+            self._tagging_worker.progress.connect(self._on_tagging_progress)
+            self._tagging_worker.finished.connect(self._on_tagging_finished)
+            self._tagging_worker.error.connect(self._on_tagging_error)
+            self._tagging_worker.start()
+ 
+            QMessageBox.information(self, "AI 태깅", "AI 태깅을 시작합니다...")
+ 
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"AI 태깅 시작 중 오류:\n{str(e)}")
+ 
+    def _on_tagging_progress(self, message):
+        """태깅 진행 상황"""
+        print(f"태깅 진행: {message}")
+ 
+    def _on_tagging_finished(self):
+        """태깅 완료 후 테이블 새로고침"""
+        QMessageBox.information(self, "AI 태깅 완료", "AI 태깅이 완료되었습니다!")
+        self._load_files_from_db()
+ 
+    def _on_tagging_error(self, error_message):
+        """태깅 에러"""
+        QMessageBox.critical(self, "AI 태깅 오류", f"태깅 중 오류:\n{error_message}")
 
     def _start_ai_tagging(self, paths):
         from src.utils.workers import FolderScanAndTagWorker

@@ -267,7 +267,34 @@ class ClasqCore:
                         "category": "#미분류",
                     })
         return files
-
+    
+    def scan_directory_files(self, directory: str) -> List[Dict[str, Any]]:
+        """디렉토리에서 지원되는 파일들 스캔"""
+        valid_extensions = (
+            '.txt', '.pdf', '.docx', '.xlsx', '.pptx', '.hwp', '.hwpx',
+            '.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif',
+            '.mp3', '.mp4', '.wav', '.m4a', '.mkv', '.avi'
+        )
+ 
+        files = []
+        directory = os.path.abspath(directory)
+ 
+        if not os.path.exists(directory):
+            return files
+ 
+        for root, _, filenames in os.walk(directory):
+            for filename in filenames:
+                if filename.lower().endswith(valid_extensions):
+                    file_path = os.path.join(root, filename)
+                    files.append({
+                        "file_name": filename,
+                        "file_path": file_path,
+                        "tags": [],
+                        "category": "#미분류"
+                    })
+ 
+        return files
+    
     def get_files_for_organize(self) -> List[Dict[str, Any]]:
         """태그가 있는 DB 파일을 정리 화면용 데이터로 조회합니다."""
         conn = self.registry._get_conn()
