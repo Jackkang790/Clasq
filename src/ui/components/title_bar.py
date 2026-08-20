@@ -97,7 +97,7 @@ class TitleBar(QWidget):
     closeClicked = Signal()
     settingsSelected = Signal()
 
-    def __init__(self, title="AI 파일 관리 시스템", parent=None):
+    def __init__(self, title="Clasq", parent=None):
         super().__init__(parent)
         self.setObjectName("titleBar")
         self.setFixedHeight(44)
