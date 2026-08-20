@@ -1,7 +1,7 @@
 # =========================================================
 # [file_pipeline.py] 
 # 문서, 이미지, 미디어 파일 데이터 추출/전처리 및 
-# 로컬 AI(Ollama) 메타데이터 생성 모듈
+# OpenAI-compatible AI 메타데이터 생성 모듈
 # =========================================================
 
 # =====================================================================
@@ -14,7 +14,7 @@
 #    - 이미지: 애니메이션 GIF 다중 프레임 안전 처리, 이중 verify() 버그 해결, 해상도 폭탄(DecompressionBomb) 방어
 #    - 텍스트/문서: UTF-8 디코딩 실패 시 CP949(EUC-KR) 자동 폴백, 암호화된 PDF 및 손상된 HWPX 압축 파일 예외 처리
 # 3. AI 통신 및 파싱 방어 (FileAnalyzer)
-#    - Ollama API 통신 중 네트워크 단절(ConnectionError), 타임아웃(Timeout), JSON 파싱 깨짐(JSONDecodeError) 세분화 예외 처리
+#    - 공통 QwenClient에서 연결, 타임아웃, HTTP, 응답/JSON 오류를 세분화
 #    - AI 분석 실패 시 프로그램 종료 방지 및 최소 메타데이터를 담은 폴백(Fallback) 응답(JSON) 반환
 # 4. 전체 프로세스 중단 방지 (Graceful Degradation)
 #    - 최상단 extract() 메서드에 거대한 try-except 블록을 두어 파싱 오류 시에도 파일명 기반 대체 텍스트로 태깅 프로세스 완주 보장
@@ -28,9 +28,17 @@ import io          # 메모리 내 바이너리 바이트 버퍼 처리 모듈
 import zlib        # HWP 파일 데이터 압축 해제(Decompress) 모듈
 import zipfile     # HWPX/DOCX 등 ZIP 포맷 압축 해제 모듈
 import xml.etree.ElementTree as ET  # XML 구조 파일 텍스트 추출용 모듈
-import requests    # 로컬 AI(Ollama) HTTP API 통신용 라이브러리
 from datetime import datetime       # 타임스탬프(분석 시간) 기록용 모듈
 from typing import Dict, Any, Tuple # 파이썬 함수 리턴 타입 명시용 모듈
+
+try:
+    from src.ai.image_analyzer import ImageAnalyzer
+    from src.ai.qwen_client import AIClientError, QwenClient
+    from src.ai.video_analyzer import VideoAnalyzer
+except ImportError:
+    from ai.image_analyzer import ImageAnalyzer
+    from ai.qwen_client import AIClientError, QwenClient
+    from ai.video_analyzer import VideoAnalyzer
 
 # 2. 문서 및 이미지 파싱용 외부 제3자 라이브러리
 from pypdf import PdfReader                  # PDF 파일 텍스트 추출
@@ -446,22 +454,24 @@ class TextExtractor:
 
 
 # =========================================================
-# [Step 2] 로컬 AI(Ollama) 메타데이터 생성 클래스 (FileAnalyzer)
+# [Step 2] 교체 가능한 OpenAI-compatible AI facade (FileAnalyzer)
 # =========================================================
 class FileAnalyzer:
-    """추출된 원문을 기반으로 로컬 LLM/Vision 모델에 요청하여 메타데이터 JSON을 만드는 클래스"""
+    """기존 호출 규격을 유지하면서 새 AI inference layer에 위임한다."""
 
     def __init__(
-        self, 
-        ollama_url: str = "http://localhost:11434", 
-        text_model: str = "qwen2.5:3b",
-        vision_model: str = "llava"
+        self,
+        client: QwenClient = None,
+        image_analyzer: ImageAnalyzer = None,
+        video_analyzer: VideoAnalyzer = None,
+        **_legacy_options: Any,
     ):
-        """Ollama API URL 및 사용할 텍스트/비전 LLM 모델명 초기화"""
-        self.ollama_api_url = f"{ollama_url.rstrip('/')}/api/generate"
-        self.ollama_chat_url = f"{ollama_url.rstrip('/')}/api/chat"
-        self.text_model = text_model
-        self.vision_model = vision_model
+        self.client = client or QwenClient()
+        self.image_analyzer = image_analyzer or ImageAnalyzer(self.client)
+        self.video_analyzer = video_analyzer or VideoAnalyzer(self.client)
+        # 단독 테스트와 기존 로그 코드가 읽는 속성을 호환용으로 유지한다.
+        self.text_model = self.client.config.model
+        self.vision_model = self.client.config.model
 
     def _get_file_info(self, file_path: str) -> Dict[str, Any]:
         """파일의 원본 이름, 확장자, 바이트 크기 및 분석 시각 메타데이터 구성"""
@@ -480,7 +490,7 @@ class FileAnalyzer:
     # 텍스트 기반 문서 분석 및 메타데이터 JSON 생성
     # ---------------------------------------------------------
     def analyze_document_text(self, file_path: str, extracted_text: str) -> Dict[str, Any]:
-        """문서 텍스트 원문을 로컬 텍스트 LLM에 전달하여 제목, 태그, 요약 JSON을 추출하는 함수"""
+        """기존 TextExtractor 결과를 OpenAI-compatible text 요청으로 분석한다."""
         file_name = os.path.basename(file_path)
         file_info = self._get_file_info(file_path)
 
@@ -506,29 +516,14 @@ Example JSON output format:
 }}
 """
 
-        payload = {
-            "model": self.text_model,
-            "prompt": prompt,
-            "format": "json", # Ollama에 JSON 출력 형식 강제 설정
-            "stream": False,
-            "options": {
-                "temperature": 0.2,
-                "num_predict": 400
-            }
-        }
-
         try:
-            # Ollama 서버 API 호출
-            response = requests.post(self.ollama_api_url, json=payload, timeout=90)
-            response.raise_for_status()
-
-            res_data = response.json()
-            raw_response_text = res_data.get("response", "").strip()
-
-            # 정규표현식으로 순수 JSON 영역만 파싱
-            match = re.search(r'\{.*\}', raw_response_text, re.DOTALL)
-            json_str = match.group(0) if match else raw_response_text
-            parsed_json = json.loads(json_str)
+            raw_response_text = self.client.request_text(
+                prompt,
+                timeout=self.client.config.timeout,
+                max_tokens=min(400, self.client.config.max_tokens),
+                temperature=0.2,
+            )
+            parsed_json = self.client.parse_json_content(raw_response_text)
 
             tags = parsed_json.get("tags", [])
             desc = parsed_json.get("description", "")
@@ -551,108 +546,26 @@ Example JSON output format:
                 "error": None
             }
 
-        except requests.exceptions.ConnectionError:
-            return self._build_fallback_response(file_info, "Ollama AI 서버에 연결할 수 없습니다. (Ollama 실행 필요)")
-        except requests.exceptions.Timeout:
-            return self._build_fallback_response(file_info, "AI 분석 시간 초과 (Timeout - 응답 지연)")
-        except json.JSONDecodeError:
-            return self._build_fallback_response(file_info, "AI 응답 파싱 실패 (유효하지 않은 JSON 구조)")
-        except Exception as e:
+        except (AIClientError, ValueError) as e:
             return self._build_fallback_response(file_info, f"Text AI 분석 중 예외 발생 ({str(e)})")
 
     # ---------------------------------------------------------
     # 이미지 바이너리 기반 Vision 멀티모달 분석
     # ---------------------------------------------------------
     def analyze_image_bytes(self, file_path: str, img_bytes: bytes) -> Dict[str, Any]:
-        """이미지 바이트 데이터를 Base64로 인코딩하여 Vision 모델(llava)에 전달하는 함수"""
-        import base64
-        
-        file_name = os.path.basename(file_path)
-        file_info = self._get_file_info(file_path)
+        """호환 시그니처. 검증용 축소본은 안전 검사에만 쓰고 원본 파일을 분석한다."""
+        del img_bytes
+        return self.image_analyzer.analyze_image(file_path)
 
-        # 이미지를 Base64 문자열로 변환
-        base64_img = base64.b64encode(img_bytes).decode('utf-8')
-
-        prompt = f"""
-You are an image analysis expert. Analyze the provided image and return a JSON object with:
-1. "display_name": A descriptive name for this image in Korean (without extension).
-2. "tags": An array of 3 to 5 relevant keyword strings in Korean (without '#' symbol).
-3. "description": A brief 1-2 sentence description/summary of what is shown in the image in Korean.
-
-Filename: {file_name}
-
-Example JSON output format:
-{{
-  "display_name": "팀 회의 화이트보드 메모",
-  "tags": ["회의", "아이디어", "아키텍처", "일정"],
-  "description": "팀 프로젝트 아키텍처 및 세부 일정이 기록된 화이트보드 이미지입니다."
-}}
-"""
-
-        payload = {
-            "model": self.vision_model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                    "images": [base64_img]
-                }
-            ],
-            "format": "json",
-            "stream": False,
-            "options": {
-                "temperature": 0.2,
-                "num_predict": 200
-            },
-            "keep_alive": "5m"
-        }
-
-        try:
-            response = requests.post(self.ollama_chat_url, json=payload, timeout=180)
-            response.raise_for_status()
-
-            res_data = response.json()
-            raw_response_text = res_data.get("message", {}).get("content", "").strip()
-
-            match = re.search(r'\{.*\}', raw_response_text, re.DOTALL)
-            json_str = match.group(0) if match else raw_response_text
-            parsed_json = json.loads(json_str)
-
-            tags = parsed_json.get("tags", [])
-            desc = parsed_json.get("description", "")
-            tags_formatted = ", ".join([f"#{t}" for t in tags]) if tags else "#이미지"
-            ai_comment_str = f"태그: {tags_formatted} / 코멘트: {desc}"
-
-            # ✨ [@TYPE: @DB 추가] MainProcessor 순서도 라우팅과 규격 통일
-            return {
-                "@TYPE": "@DB",
-                "status": "SUCCESS",
-                "file_info": file_info,
-                "metadata": {
-                    "@TYPE": "@DB",
-                    "display_name": parsed_json.get("display_name", file_info["original_name"].rsplit('.', 1)[0]),
-                    "tags": tags,
-                    "description": desc,
-                    "ai_comment": ai_comment_str, # GUI 디스플레이용 완성형 문자열
-                    "ocr_text": ""
-                },
-                "error": None
-            }
-
-        except requests.exceptions.ConnectionError:
-            return self._build_fallback_response(file_info, "Ollama AI 서버에 연결할 수 없습니다. (Ollama 실행 필요)")
-        except requests.exceptions.Timeout:
-            return self._build_fallback_response(file_info, "Vision AI 분석 시간 초과 (Timeout - 로딩 또는 연산 지연)")
-        except json.JSONDecodeError:
-            return self._build_fallback_response(file_info, "Vision AI 응답 파싱 실패 (유효하지 않은 JSON 구조)")
-        except Exception as e:
-            return self._build_fallback_response(file_info, f"Vision AI 분석 중 예외 발생 ({str(e)})")
+    def analyze_video(self, file_path: str) -> Dict[str, Any]:
+        return self.video_analyzer.analyze_video(file_path)
 
     # ---------------------------------------------------------
     # 예외 발생 시 안전하게 기본값을 채워주는 폴백(Fallback) 함수
     # ---------------------------------------------------------
     def _build_fallback_response(self, file_info: Dict[str, Any], error_message: str) -> Dict[str, Any]:
         """AI 분석 실패 시 프로그램 멈춤 없이 최소 메타데이터로 구성된 실패 응답 JSON 반환"""
+        file_info = {**self._get_file_info(""), **file_info}
         default_name = file_info["original_name"].rsplit('.', 1)[0]
         return {
             "@TYPE": "@DB",
@@ -676,7 +589,7 @@ Example JSON output format:
 if __name__ == "__main__":
     # 파서 및 분석기 객체 인스턴스 생성
     extractor = TextExtractor(max_chars=2000, max_img_size=512)
-    analyzer = FileAnalyzer(text_model="qwen2.5:3b", vision_model="llava")
+    analyzer = FileAnalyzer()
 
     # 테스트할 파일 샘플 리스트
     test_files = [

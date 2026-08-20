@@ -111,3 +111,10 @@ class FileUploadView(QWidget):
         if text:
             self.message_submitted.emit(text)
             self.input_field.clear()
+
+    def set_busy(self, busy: bool):
+        """현재 AI 요청과 충돌하는 입력만 잠시 비활성화한다."""
+        enabled = not busy
+        self.input_field.setEnabled(enabled)
+        self.send_btn.setEnabled(enabled)
+        self.plus_btn.setEnabled(enabled)

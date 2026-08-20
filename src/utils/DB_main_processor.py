@@ -122,7 +122,7 @@ class MainProcessor:
             })
 
         # 3) 파일 종류별로 분기 처리 (전처리는 팀원 B의 file_pipeline.py 담당)
-        # A. 이미지 파일 처리 -> Vision 모델(예: llava)로 이미지 자체를 분석
+        # A. 이미지 파일 처리 -> 호환 FileAnalyzer facade로 이미지 자체를 분석
         if self.extractor.is_image_file(file_path):
             img_bytes, status = self.extractor.process_image(file_path)
             if status != "SUCCESS":
@@ -237,3 +237,11 @@ class MainProcessor:
                     "raw_data": json_data
                 }
             }
+
+
+# Backward compatibility: this historical module remains importable, but all
+# callers receive the canonical implementation from main_processor.py.
+try:
+    from .main_processor import MainProcessor as MainProcessor
+except ImportError:
+    from main_processor import MainProcessor as MainProcessor

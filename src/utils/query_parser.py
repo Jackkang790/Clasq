@@ -2,22 +2,25 @@
 # [query_parser.py] 
 # 프론트엔드 자연어 입력 파싱 및 의도 분류 모듈 (@검색, @대화)
 # =========================================================
-import re          # 정규표현식 모듈
 import json        # JSON 데이터 디코딩/인코딩 모듈
-import requests    # 로컬 AI(Ollama) HTTP API 통신 모듈
 from typing import Dict, Any
+
+try:
+    from src.ai.qwen_client import QwenClient
+except ImportError:
+    from ai.qwen_client import QwenClient
 
 
 class SearchQueryParser:
     """
     [자연어 분석 모듈] 
-    사용자가 입력한 검색어/일상대화 문장을 로컬 AI(Ollama)에 전달하고,
+    사용자가 입력한 검색어/일상대화 문장을 OpenAI-compatible AI에 전달하고,
     의도를 분석하여 구조화된 JSON(@검색, @대화)으로 변환해 반환합니다.
     """
 
-    def __init__(self, ollama_url: str = "http://localhost:11434", model: str = "qwen2.5:3b"):
-        self.ollama_api_url = f"{ollama_url.rstrip('/')}/api/generate"
-        self.model = model
+    def __init__(self, client: QwenClient = None, **_legacy_options: Any):
+        self.client = client or QwenClient()
+        self.model = self.client.config.model
 
     def parse_user_query(self, user_text: str) -> Dict[str, Any]:
         """사용자 입력 자연어를 분석하여 '@TYPE'이 포함된 JSON 객체 반환"""
@@ -59,24 +62,14 @@ If "@대화":
 }}
 """
 
-        payload = {
-            "model": self.model,
-            "prompt": prompt,
-            "format": "json",
-            "stream": False,
-            "options": {"temperature": 0.1}
-        }
-
         try:
-            res = requests.post(self.ollama_api_url, json=payload, timeout=30)
-            res.raise_for_status()
-            
-            raw_text = res.json().get("response", "").strip()
-
-            # 응답 내 Pure JSON 영역 추출
-            match = re.search(r'\{.*\}', raw_text, re.DOTALL)
-            json_str = match.group(0) if match else raw_text
-            parsed_json = json.loads(json_str)
+            raw_text = self.client.request_text(
+                prompt,
+                timeout=self.client.config.timeout,
+                max_tokens=min(400, self.client.config.max_tokens),
+                temperature=0.1,
+            )
+            parsed_json = self.client.parse_json_content(raw_text)
 
             # @TYPE 누락 시 기본 폴백
             if "@TYPE" not in parsed_json:
@@ -104,7 +97,7 @@ If "@대화":
 # 단독 테스트 실행부 (main)
 # =========================================================
 if __name__ == "__main__":
-    parser = SearchQueryParser(model="qwen2.5:3b")
+    parser = SearchQueryParser()
 
     print("=== [SearchQueryParser] 자연어 의도 파싱 테스트 ===")
 

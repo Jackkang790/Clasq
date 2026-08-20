@@ -89,12 +89,42 @@ class FileRegistryManager:
                 {
                     "file_hash": "TEXT",
                     "file_size": "INTEGER",
+                    "file_mtime_ns": "INTEGER",
                     "created_at": "TEXT",
                     "updated_at": "TEXT",
                 },
             )
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_files_hash ON files(file_hash)")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS file_fingerprint_cache (
+                    file_path TEXT PRIMARY KEY,
+                    file_hash TEXT NOT NULL,
+                    file_size INTEGER NOT NULL,
+                    file_mtime_ns INTEGER NOT NULL,
+                    updated_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS file_text_index (
+                    file_path TEXT PRIMARY KEY,
+                    file_hash TEXT,
+                    file_size INTEGER,
+                    file_mtime_ns INTEGER,
+                    extracted_text TEXT,
+                    extractor_type TEXT,
+                    extract_status TEXT,
+                    updated_at TEXT
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_file_text_status "
+                "ON file_text_index(extract_status)"
+            )
             conn.commit()
         finally:
             conn.close()
@@ -140,7 +170,12 @@ class FileRegistryManager:
     def _find_by_hash(
         self, conn: sqlite3.Connection, file_hash: str, exclude_path: Optional[str] = None
     ) -> Optional[tuple]:
-        query = "SELECT file_path FROM files WHERE file_hash = ?"
+        query = """
+            SELECT file_path FROM files
+            WHERE file_hash = ?
+              AND (length(trim(coalesce(ai_comment, ''))) > 0
+                   OR length(trim(coalesce(category, ''))) > 0)
+        """
         params: List[Any] = [file_hash]
         if exclude_path:
             query += " AND file_path != ?"
@@ -239,7 +274,8 @@ class FileRegistryManager:
             ai_comment = meta.get("ai_comment", "")
             tags = meta.get("tags", [])
             category = f"#{tags[0]}" if tags else "#일반"
-            file_size = os.path.getsize(final_path)
+            file_stat = os.stat(final_path)
+            file_size = file_stat.st_size
             now = time.strftime("%Y-%m-%d %H:%M:%S")
 
             # 🌟 [개선] INSERT OR REPLACE -> UPSERT(ON CONFLICT)로 변경
@@ -250,20 +286,22 @@ class FileRegistryManager:
             conn.execute(
                 """
                 INSERT INTO files (file_name, file_path, ai_comment, category,
-                                    file_hash, file_size, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                    file_hash, file_size, file_mtime_ns, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(file_path) DO UPDATE SET
                     file_name = excluded.file_name,
                     ai_comment = excluded.ai_comment,
                     category = excluded.category,
                     file_hash = excluded.file_hash,
                     file_size = excluded.file_size,
+                    file_mtime_ns = excluded.file_mtime_ns,
                     updated_at = excluded.updated_at
                 """,
                 (file_name, final_path, ai_comment,
-                 category, file_hash, file_size, now, now),
+                 category, file_hash, file_size, file_stat.st_mtime_ns, now, now),
             )
 
+            conn.execute("DELETE FROM file_fingerprint_cache WHERE file_path = ?", (file_path,))
             conn.commit()
             result["success"] = True
             result["file_path"] = final_path
@@ -273,6 +311,139 @@ class FileRegistryManager:
             conn.rollback()
             result["message"] = f"DB 저장 오류: {e}"
             return result
+        finally:
+            if owns_conn:
+                conn.close()
+
+    def register_reused_analysis(
+        self, file_path: str, source_file_path: str, expected_hash: str
+    ) -> Dict[str, Any]:
+        """Register an identical file using existing metadata without AI or quarantine.
+
+        This is intentionally separate from save_file_result(): incremental scans
+        must never invoke the physical duplicate/quarantine policy merely to reuse
+        an already analyzed SHA-256 result.
+        """
+        result: Dict[str, Any] = {
+            "success": False,
+            "file_path": file_path,
+            "reused_from": source_file_path,
+        }
+        if not os.path.isfile(file_path):
+            result["message"] = f"File not found: {file_path}"
+            return result
+
+        conn = self._get_conn()
+        owns_conn = self._bulk_conn is None
+        try:
+            actual_hash = self.compute_file_hash(file_path)
+            if actual_hash != expected_hash:
+                result["message"] = "File changed after incremental scan."
+                return result
+            source = conn.execute(
+                """
+                SELECT ai_comment, category
+                FROM files
+                WHERE file_path = ? AND file_hash = ?
+                """,
+                (source_file_path, expected_hash),
+            ).fetchone()
+            if source is None or not ((source[0] or "").strip() or (source[1] or "").strip()):
+                result["message"] = "Reusable analyzed metadata was not found."
+                return result
+
+            now = time.strftime("%Y-%m-%d %H:%M:%S")
+            file_stat = os.stat(file_path)
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                INSERT INTO files (file_name, file_path, ai_comment, category,
+                                   file_hash, file_size, file_mtime_ns, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(file_path) DO UPDATE SET
+                    file_name = excluded.file_name,
+                    ai_comment = excluded.ai_comment,
+                    category = excluded.category,
+                    file_hash = excluded.file_hash,
+                    file_size = excluded.file_size,
+                    file_mtime_ns = excluded.file_mtime_ns,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    os.path.basename(file_path), file_path, source[0] or "",
+                    source[1] or "", actual_hash, file_stat.st_size,
+                    file_stat.st_mtime_ns, now, now,
+                ),
+            )
+            conn.execute("DELETE FROM file_fingerprint_cache WHERE file_path = ?", (file_path,))
+            conn.commit()
+            result["success"] = True
+            return result
+        except Exception as exc:
+            conn.rollback()
+            result["message"] = f"DB metadata reuse failed: {exc}"
+            return result
+        finally:
+            if owns_conn:
+                conn.close()
+
+    def cache_file_fingerprints(self, records: List[Dict[str, Any]]) -> int:
+        """Bulk-cache fingerprints while leaving analysis metadata empty."""
+        if not records:
+            return 0
+        conn = self._get_conn()
+        owns_conn = self._bulk_conn is None
+        now = time.strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            conn.executemany(
+                """
+                INSERT INTO file_fingerprint_cache (
+                    file_path, file_hash, file_size, file_mtime_ns, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(file_path) DO UPDATE SET
+                    file_hash = excluded.file_hash,
+                    file_size = excluded.file_size,
+                    file_mtime_ns = excluded.file_mtime_ns,
+                    updated_at = excluded.updated_at
+                """,
+                [
+                    (
+                        record["file_path"], record["file_hash"],
+                        record["file_size"], record["file_mtime_ns"], now,
+                    )
+                    for record in records
+                ],
+            )
+            conn.commit()
+            return len(records)
+        finally:
+            if owns_conn:
+                conn.close()
+
+    def backfill_file_fingerprints(self, records: List[Dict[str, Any]]) -> int:
+        """Update fingerprint columns on existing files rows without metadata changes."""
+        if not records:
+            return 0
+        conn = self._get_conn()
+        owns_conn = self._bulk_conn is None
+        try:
+            conn.executemany(
+                """
+                UPDATE files
+                SET file_hash = ?, file_size = ?, file_mtime_ns = ?
+                WHERE file_path = ?
+                """,
+                [
+                    (
+                        record["file_hash"], record["file_size"],
+                        record["file_mtime_ns"], record["file_path"],
+                    )
+                    for record in records
+                ],
+            )
+            conn.commit()
+            return len(records)
         finally:
             if owns_conn:
                 conn.close()
@@ -288,6 +459,8 @@ class FileRegistryManager:
         owns_conn = self._bulk_conn is None
         try:
             conn.execute("DELETE FROM files;")
+            conn.execute("DELETE FROM file_fingerprint_cache;")
+            conn.execute("DELETE FROM file_text_index;")
             conn.execute("DELETE FROM sqlite_sequence WHERE name='files';")
             conn.commit()
         finally:
