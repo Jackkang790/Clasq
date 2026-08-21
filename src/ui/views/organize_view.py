@@ -244,7 +244,38 @@ class _GroupedScreen(QWidget):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("""
+            QScrollArea { border: none; background: transparent; }
+
+            QScrollBar:vertical {
+                border: none;
+                background-color: transparent;
+                width: 8px;
+                margin: 0px 0px 0px 0px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #CBD5E1;
+                min-height: 30px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #94A3B8;
+            }
+            QScrollBar::handle:vertical:pressed {
+                background-color: #6C5CE7;
+            }
+            QScrollBar::sub-line:vertical, QScrollBar::add-line:vertical {
+                border: none;
+                background: none;
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+        """)
         self.group_container = QWidget()
         self.group_layout = QVBoxLayout(self.group_container)
         self.group_layout.setSpacing(12)
@@ -388,7 +419,6 @@ class OrganizeView(QWidget):
         from src.utils.workers import FolderScanAndTagWorker
         self._tagging_worker = FolderScanAndTagWorker(paths, self.core)
 
-        # 취소 버튼 없이(None) 진행률 알 수 없는(0,0) 인디케이터로 표시
         self._tagging_dialog = QProgressDialog(
             "AI 태깅을 준비하고 있습니다...", None, 0, 0, self
         )
@@ -399,7 +429,7 @@ class OrganizeView(QWidget):
         self._tagging_dialog.setAutoReset(False)
 
         self._tagging_worker.progress.connect(self._tagging_dialog.setLabelText)
-        self._tagging_worker.finished.connect(self._on_tagging_finished)
+        self._tagging_worker.taggingFinished.connect(self._on_tagging_finished)  # ← finished 대신 taggingFinished
         self._tagging_worker.error.connect(self._on_tagging_error)
 
         self._tagging_worker.start()
@@ -417,7 +447,7 @@ class OrganizeView(QWidget):
             self._tagging_dialog.close()
             self._tagging_dialog = None
         QMessageBox.critical(self, "AI 태깅 오류", message)
-        
+
     def _on_auto_organize(self):
         if not self.core:
             QMessageBox.warning(self, "자동 정리", "코어 시스템이 초기화되지 않았습니다.")
@@ -462,9 +492,6 @@ class OrganizeView(QWidget):
 
     def set_file_rows(self, rows):
         self._table_screen.set_rows(rows)
-
-    def set_grouped_result(self, groups):
-        self._grouped_screen.set_groups(groups)
 
     def update_tags(self, file_id: int, tags_str: str) -> bool:
         """태그 저장 목록 화면에서 인라인 수정한 태그를 DB에 반영"""

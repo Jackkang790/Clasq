@@ -6,7 +6,7 @@ from .query_parser import SearchQueryParser
 
 class FolderScanAndTagWorker(QThread):
     progress = Signal(str)
-    finished = Signal()
+    taggingFinished = Signal()
     error = Signal(str)
 
     def __init__(self, folder_paths: list, core: ClasqCore):
@@ -14,8 +14,6 @@ class FolderScanAndTagWorker(QThread):
         self.folder_paths = folder_paths
         self.core = core
 
-    # 비동기 제어랑 스레드 반복 처리 하는 함수
-    # 독립된 백그라운드 스레드인 QThread 안에서 동작함
     def run(self):
         try:
             valid_extensions = (
@@ -47,22 +45,17 @@ class FolderScanAndTagWorker(QThread):
             total_count = len(files_to_process)
 
             for idx, file_path in enumerate(files_to_process, start=1):
-                # 파일 리스트를 하나씩 꺼내서
-                # core.process_file_upload로 넘겨줌
                 file_name = os.path.basename(file_path)
-                self.progress.emit(
-                    # 파일 처리 진행 상황 프론트 엔드 연결 필요
-                    f"AI 분석 중 ({idx}/{total_count}): {file_name}")
+                self.progress.emit(f"AI 분석 중 ({idx}/{total_count}): {file_name}")
                 self.core.process_file_upload(file_path)
 
-            self.finished.emit()
+            self.taggingFinished.emit()   # ← self.finished.emit() 에서 수정
 
         except Exception as e:
             self.error.emit(f"스캔 및 태깅 작업 중 오류 발생: {str(e)}")
 
 
 class QueryParseWorker(QThread):
-    # 사용자가 자연어 입력 시 UI 멈춤 방지
     finished = Signal(dict)
     error = Signal(str)
 
@@ -74,6 +67,6 @@ class QueryParseWorker(QThread):
     def run(self):
         try:
             result = self.query_parser.parse_user_query(self.user_text)
-            self.finished.emit(result)
+            self.finished.emit(result)   # ← self.taggingFinished.emit() 에서 수정 (result도 복구)
         except Exception as e:
             self.error.emit(f"자연어 파싱 처리 중 오류: {str(e)}")

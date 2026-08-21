@@ -5,6 +5,8 @@ import sys
 from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,          # ← 추가
+    QGridLayout,      # ← 추가
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -44,6 +46,50 @@ class QueryProcessWorker(QThread):
             self.error.emit(str(exc))
 
 # src/ui/views/search_view.py
+class _FileResultCard(QFrame):
+    """검색 결과 1건을 나타내는 클릭 가능한 카드 (아이콘 + 파일명)"""
+    clicked = Signal(str)  # file_path를 실어서 emit
+
+    def __init__(self, file_name: str, file_path: str, tooltip: str = "", parent=None):
+        super().__init__(parent)
+        self.file_path = file_path
+        self.setObjectName("fileResultCard")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedSize(150, 130)
+        if tooltip:
+            self.setToolTip(tooltip)
+
+        self.setStyleSheet("""
+            QFrame#fileResultCard {
+                background-color: #FFFFFF;
+                border: 1px solid #E4E6EF;
+                border-radius: 14px;
+            }
+            QFrame#fileResultCard:hover {
+                background-color: #F5F4FF;
+                border: 1px solid #DCD6FF;
+            }
+        """)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 18, 14, 14)
+        layout.setSpacing(10)
+
+        icon_label = QLabel("📄")
+        icon_label.setAlignment(Qt.AlignCenter)
+        icon_label.setStyleSheet("font-size: 30px; color: #B9A9FF; background: transparent; border: none;")
+        layout.addWidget(icon_label)
+
+        name_label = QLabel(file_name)
+        name_label.setAlignment(Qt.AlignCenter)
+        name_label.setWordWrap(True)
+        name_label.setStyleSheet("font-size: 12px; font-weight: 600; color: #4B4B63; background: transparent; border: none;")
+        layout.addWidget(name_label)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit(self.file_path)
+        super().mousePressEvent(event)
 
 class SearchView(QWidget):
     def __init__(self, core=None, parent=None, search_engine=None, query_parser=None):  # core 매개변수 추가
@@ -257,11 +303,12 @@ class SearchView(QWidget):
             return
         self.add_message(f"'{file_path}' 파일을 분석 중입니다...", is_user=False)
         self._file_worker = FolderScanAndTagWorker([file_path], self.core)
-        self._file_worker.finished.connect(
+        self._file_worker.taggingFinished.connect(   # ← finished 대신 taggingFinished
             lambda: self.add_message("파일 분석과 태그 저장이 완료되었습니다.", is_user=False)
         )
         self._file_worker.error.connect(self._on_query_error)
         self._file_worker.start()
+        
     def process_query(self, query: str):
         self.add_message(query, is_user=True)
         if self.core is not None:
@@ -297,26 +344,49 @@ class SearchView(QWidget):
             self.add_message(message, is_user=False)
         else:
             self.add_message(f"⚠️ {message or '요청을 처리하지 못했습니다.'}", is_user=False, kind="error")
+
     def _render_search_results(self, rows):
-        """
-        SearchEngine이 돌려주는 (id, file_name, file_path, ai_comment, category) 튜플 목록을
-        채팅 버블 형태로 하나씩 표시한다.
-        """
         MAX_SHOWN = 10
-        for row in rows[:MAX_SHOWN]:
-            _id, file_name, file_path, ai_comment, category, *_ = row
-            lines = [f"📄 {file_name}"]
-            if category:
-                lines.append(f"분류: {category}")
-            if file_path:
-                lines.append(f"경로: {file_path}")
-            if ai_comment:
-                lines.append(f"메모: {ai_comment}")
-            self._add_result_bubble("\n".join(lines), is_user=False, kind="result")
+        shown_rows = rows[:MAX_SHOWN]
+        if shown_rows:
+            self._render_result_cards(shown_rows)
 
         remaining = len(rows) - MAX_SHOWN
         if remaining > 0:
             self.add_message(f"...외 {remaining}건 더 있습니다.", is_user=False)
+
+    def _render_result_cards(self, rows):
+        """검색 결과를 카드 그리드로 렌더링. 카드 클릭 시 탐색기로 파일 위치를 연다."""
+        row_layout = QHBoxLayout()
+
+        cards_container = QWidget()
+        grid = QGridLayout(cards_container)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(10)
+        grid.setVerticalSpacing(10)
+
+        COLUMNS = 3  # 한 줄에 카드 3개, 넘치면 다음 줄로
+        for idx, row in enumerate(rows):
+            _id, file_name, file_path, ai_comment, category, *_ = row
+            tooltip_lines = []
+            if category:
+                tooltip_lines.append(f"분류: {category}")
+            if file_path:
+                tooltip_lines.append(f"경로: {file_path}")
+            if ai_comment:
+                tooltip_lines.append(f"메모: {ai_comment}")
+
+            card = _FileResultCard(file_name, file_path, tooltip="\n".join(tooltip_lines))
+            card.clicked.connect(self.open_in_explorer)
+
+            r, c = divmod(idx, COLUMNS)
+            grid.addWidget(card, r, c)
+
+        row_layout.addWidget(cards_container)
+        row_layout.addStretch()
+
+        self.chat_layout.insertLayout(self.chat_layout.count() - 1, row_layout)
+        self.scroll_to_bottom()
 
     # -----------------------------------------------------------------
     # 임시 자연어 파서 (TODO: REQ-011 LLM 의도 파서로 교체 예정)
