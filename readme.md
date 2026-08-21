@@ -589,3 +589,126 @@ Thread
 - [ ] `setting_view` 파일 태깅 중 UI가 멈추지 않는가?
 - [ ] Progress Dialog가 작업 완료 또는 오류 발생 후 반드시 종료되는가?
 - [ ] 프로그램 종료 시 Worker Thread가 정상적으로 종료되는가?
+---
+
+# 클래스별 기능 정리
+
+저장소에 존재하는 모든 클래스의 소속 파일, 책임, 핵심 메서드를 정리한다.
+
+## 진입점 / 인프라
+
+### `MainWindow` (`main.py`)
+- 프레임리스 메인 윈도우. 상단바 · 사이드바 · `QStackedWidget`(설정/검색/정리/저장목록)을 구성한다.
+- `ClasqCore`와 `RefreshManager`를 생성해 모든 뷰에 주입한다.
+- 핵심: `_navigate()`, `_go_back()`, `_go_forward()`, `_refresh_data_models()`, `_animated_minimize()`, `_toggle_pseudo_maximize()`
+
+### `OllamaManager` (`ollama_manager.py`)
+- 로컬 Ollama 설치 · 서버 실행 · 모델 다운로드 · REST 호출을 담당하는 정적 클래스.
+- 핵심: `is_installed()`, `install()`, `is_running()`, `start_server()`, `model_exists()`, `download_model()`, `request()`, `test_model()`, `generate()`, `initialize()`
+
+### `RefreshManager` (`src/ui/refresh_manager.py`)
+- DB가 변경됐을 때 `database_changed` 시그널로 모든 화면을 한 번에 동기화한다.
+- 핵심: `refresh()`
+
+## 코어 파이프라인
+
+### `ClasqCore` (`src/utils/core.py`)
+- DB · 추출기 · 분석기 · 검색엔진을 묶는 애플리케이션 코어.
+- 파일 처리 순서는 **내용 분석 우선**이며, 추출 또는 이미지 전처리가 실패한 경우에만 확장자 폴백 태그를 사용한다.
+- 핵심: `process_file_upload()`, `process_user_query()`, `process_folder_batch()`, `sync_db_with_disk()`, `scan_directory_files()`, `get_saved_files()`, `update_saved_file()`, `build_organize_preview()`, `group_files_by_tags()`, `organize_files()`, `get_all_files()`
+
+### `MainProcessor` (`src/utils/core.py`)
+- 기존 호출부 호환을 위한 `ClasqCore` 별칭 서브클래스.
+
+### `FilePreprocessError` (`src/utils/file_pipeline.py`)
+- 파일 읽기/해석 단계의 오류를 나타내는 사용자 정의 예외.
+
+### `ExtensionTagger` (`src/utils/file_pipeline.py`)
+- **내용 분석이 실패한 경우에만** 사용하는 확장자 기반 폴백 태거.
+- 이미지(`.jpg/.jpeg/.png/.bmp/.webp/.tiff`) → `이미지`, 정적 GIF → `이미지`, 움직이는 GIF → `움짤`, 텍스트(`.txt/.md/.csv/.log` 등) → `텍스트`, 문서(`.pdf/.doc/.docx/.xls/.xlsx/.hwp/.hwpx`) → `문서`, `.ppt/.pptx` → `ppt`, 그 외 → `미분류`
+- 핵심: `tag_for()`, `is_animated_gif()`
+
+### `TextExtractor` (`src/utils/file_pipeline.py`)
+- 확장자별 원문/이미지 데이터 추출. 이미지 리사이즈·JPEG 변환, PDF/DOCX/XLSX/PPTX/HWP/HWPX 파싱, UTF-8 실패 시 CP949 폴백, 압축·대용량·손상 파일 차단.
+- 핵심: `is_image_file()`, `process_image()`, `extract()`, `_sanitize_text()`
+
+### `FileAnalyzer` (`src/utils/file_pipeline.py`)
+- Ollama 텍스트/비전 모델을 호출해 표시 이름·태그·설명을 생성하고 응답 JSON을 정규화한다.
+- 분석 실패 시 `ExtensionTagger` 태그를 담은 폴백 응답을 만든다.
+- 핵심: `analyze_document_text()`, `analyze_image_bytes()`, `_get_file_info()`, `_normalize_tags()`, `_build_fallback_response()`
+
+### `FileRegistryManager` (`src/utils/db_manager.py`)
+- SQLite(`file_manager.db`) 접근 계층. WAL·busy timeout·UTF-8 커넥션 설정, 스키마 마이그레이션, 해시 기반 중복 감지와 `_duplicates` 격리, 파일 레코드 CRUD, 관리 경로(`managed_paths`) 관리.
+- 문자열은 변환 없이 Python `str` 그대로 파라미터 바인딩하므로 한글이 깨지지 않는다.
+- 핵심: `save_file_result()`, `sync_with_disk()`, `add_managed_path()`, `get_managed_paths()`, `get_managed_path_presets()`, `remove_managed_path()`, `update_tags()`, `rename_file()`, `delete_file()`, `get_all_files()`, `bulk_session()`
+
+### `SearchQueryParser` (`src/utils/query_parser.py`)
+- 자연어 입력을 검색/대화 의도로 분류하고 검색어·확장자·날짜 범위를 추출한다. Ollama 실패 시 규칙 기반 폴백.
+- 핵심: `parse_user_query()`, `_normalize_extensions()`, `_extract_date_range()`, `_fallback_search()`
+
+### `SearchEngine` (`src/utils/search_engine.py`)
+- 파싱 결과를 DB 질의로 변환한다. 불용어 제거, 동의어 확장, AND 검색 후 OR 폴백, 확장자·날짜 필터링.
+- 핵심: `process_query_result()`, `search_files_smart()`, `_execute_sql_query()`
+
+## Worker 스레드
+
+### `FolderScanAndTagWorker` (`src/utils/workers.py`)
+- `setting_view`에서 선택한 경로를 스캔하고 파일별 AI 태깅을 GUI 스레드 밖에서 수행한다.
+- 시그널: `progress(str)`, `fileProgress(int, int, str)`(순번/전체/파일명), `taggingFinished()`, `finished(dict)`, `error(str)`
+- UI는 직접 건드리지 않고 시그널만 방출한다.
+
+### `OllamaInitWorker` (`src/utils/workers.py`)
+- 프로그램 기동 시 Ollama 설치 확인 → 서버 시작 → 모델 확인/다운로드 → 모델 응답 테스트의 4단계를 백그라운드로 수행한다.
+- 시그널: `progress(int, int, str)`(완료 단계/전체 단계/상태 문구), `completed(bool, str)`
+
+### `QueryParseWorker` (`src/utils/workers.py`), `QueryProcessWorker` (`src/ui/views/search_view.py`)
+- 자연어 검색 파싱/처리를 백그라운드에서 실행하고 결과를 시그널로 전달한다.
+
+## 공용 위젯
+
+### `TaskProgressDialog` (`src/ui/widgets/progress_dialog.py`)
+- 파일 태깅과 Ollama 모델 로딩이 공유하는 Progress Dialog. 제목 · 상태 문구 · Progress Bar · `n / total 처리 중` · 현재 항목명을 표시한다.
+- 전체 개수를 알 수 없으면 Indeterminate 모드로 동작하며 가짜 진행률을 만들지 않는다.
+- 핵심: `update_progress(current, total, detail, status)`
+
+### `Sidebar` (`src/ui/components/side_bar.py`)
+- 좌측 내비게이션. `page_changed(int)` 시그널로 스택 인덱스를 전환한다.
+
+### `TitleBar` (`src/ui/components/title_bar.py`) / `_AnimatedIconButton`
+- 커스텀 상단바(뒤로/앞으로/설정/최소화/최대화/닫기)와 호버 애니메이션 아이콘 버튼.
+
+### `FileUploadView` (`src/ui/widgets/fileupload_view.py`)
+- 드래그 앤 드롭 파일 업로드 영역 위젯.
+
+## 화면(View)
+
+### `SettingsView` (`src/ui/views/settings_view.py`)
+- 관리 경로 추가/삭제/저장, 프리셋(JSON) 관리, **파일 태깅 실행 화면**.
+- `start_tagging()`이 `FolderScanAndTagWorker`와 `TaskProgressDialog`("파일 태깅 중")를 함께 띄우고, `fileProgress`로 실제 처리 개수를 반영한 뒤 완료·오류 시 Dialog를 자동으로 닫는다.
+- 핵심: `start_tagging()`, `on_tagging_file_progress()`, `on_tagging_finished()`, `on_tagging_error()`, `load_paths_from_db()`, `add_root()`, `del_root()`, `save_preset()`, `load_preset()`
+
+### `CheckBoxHeader` (`src/ui/views/settings_view.py`)
+- 경로 테이블의 전체 선택 체크박스를 그리는 커스텀 헤더.
+
+### `OrganizeView` (`src/ui/views/organize_view.py`)
+- 파일 자동 정리 화면. 태그 기반 그룹 미리보기와 실제 파일 이동을 담당한다.
+- `프리셋 불러오기`는 `managed_paths`의 `id`를 프리셋 이름으로, `path`를 실제 경로로 사용하며 선택한 경로를 기존 경로 추가 로직으로 넘겨 중복 처리를 그대로 따른다.
+- 핵심: `_on_load_preset()`, `_on_path_added()`, `_load_files_from_db()`, `_on_auto_organize()`, `_on_organize_confirmed()`
+
+### `_FileTableScreen` (`src/ui/views/organize_view.py`)
+- 정리 대상 파일 테이블 화면. 버튼 순서는 `[프리셋 불러오기] [경로 추가하기] [자동 정리하기]`이며 프리셋 버튼은 경로 추가 버튼과 동일한 보조 버튼 스타일을 쓴다.
+- 시그널: `presetLoadRequested()`, `addPathRequested(str)`, `autoOrganizeRequested()`
+
+### `_GroupedScreen`, `_GroupedFolderCard`, `_FileIconCard`, `_InfoBanner` (`src/ui/views/organize_view.py`)
+- 자동 그룹화 결과 화면과 폴더 카드 · 파일 아이콘 카드 · 안내 배너 구성 요소.
+
+### `SearchView` (`src/ui/views/search_view.py`)
+- 자연어 검색 화면. 채팅형 UI, 파일 첨부/드래그 앤 드롭, 백그라운드 검색, 결과 카드 표시, 탐색기 열기.
+
+### `_FileResultCard` (`src/ui/views/search_view.py`)
+- 검색 결과 한 건을 표시하는 카드 위젯.
+
+### `SavedView` (`src/ui/views/saved_view.py`)
+- 저장목록 화면. 셀 더블클릭으로 파일명·태그를 편집하고 저장 시 실제 파일 이름 변경과 DB 갱신을 수행한다.
+- 편집 값은 `item.text()`로 얻은 Python `str`을 그대로 DB에 바인딩하며 별도의 `encode()`/`decode()` 변환을 하지 않아 한글이 유지된다.
+- 핵심: `load_data()`, `save_to_db()`, `on_save_changes()`, `on_delete_file()`

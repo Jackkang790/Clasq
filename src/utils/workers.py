@@ -1,5 +1,6 @@
 import os
 from PySide6.QtCore import QThread, Signal
+from ollama_manager import OllamaManager
 from .core import ClasqCore
 from .query_parser import SearchQueryParser
 from .config import SUPPORTED_EXTENSIONS
@@ -7,6 +8,7 @@ from .config import SUPPORTED_EXTENSIONS
 
 class FolderScanAndTagWorker(QThread):
     progress = Signal(str)
+    fileProgress = Signal(int, int, str)  # 처리 순번, 전체 개수, 현재 파일명
     taggingFinished = Signal()
     finished = Signal(dict)
     error = Signal(str)
@@ -46,6 +48,7 @@ class FolderScanAndTagWorker(QThread):
             for idx, file_path in enumerate(files_to_process, start=1):
                 file_name = os.path.basename(file_path)
                 self.progress.emit(f"AI 분석 중 ({idx}/{total_count}): {file_name}")
+                self.fileProgress.emit(idx, total_count, file_name)
                 try:
                     result = self.core.process_file_upload(file_path)
                     if result.get("status") == "SUCCESS":
@@ -61,6 +64,43 @@ class FolderScanAndTagWorker(QThread):
 
         except Exception as e:
             self.error.emit(f"스캔 및 태깅 작업 중 오류 발생: {str(e)}")
+
+
+class OllamaInitWorker(QThread):
+    """Ollama 설치·서버·모델 준비 과정을 GUI 스레드 밖에서 단계별로 수행합니다."""
+
+    TOTAL_STEPS = 4
+
+    progress = Signal(int, int, str)  # 완료 단계, 전체 단계, 현재 상태 문구
+    completed = Signal(bool, str)
+
+    def run(self):
+        try:
+            self.progress.emit(0, self.TOTAL_STEPS, "Ollama 설치 상태를 확인하고 있습니다...")
+            if not OllamaManager.is_installed() and not OllamaManager.install():
+                self.completed.emit(False, "Ollama를 설치하지 못했습니다.")
+                return
+
+            self.progress.emit(1, self.TOTAL_STEPS, "Ollama 서버를 시작하고 있습니다...")
+            if not OllamaManager.start_server():
+                self.completed.emit(False, "Ollama 서버를 시작하지 못했습니다.")
+                return
+
+            model_name = OllamaManager.MODEL_NAME
+            self.progress.emit(2, self.TOTAL_STEPS, f"{model_name} 모델을 확인하고 있습니다...")
+            if not OllamaManager.model_exists() and not OllamaManager.download_model():
+                self.completed.emit(False, f"{model_name} 모델을 내려받지 못했습니다.")
+                return
+
+            self.progress.emit(3, self.TOTAL_STEPS, f"{model_name} 모델을 불러오고 있습니다...")
+            if not OllamaManager.test_model():
+                self.completed.emit(False, "AI 모델 응답 확인에 실패했습니다.")
+                return
+
+            self.progress.emit(self.TOTAL_STEPS, self.TOTAL_STEPS, "AI 모델 준비를 마쳤습니다.")
+            self.completed.emit(True, "")
+        except Exception as exc:
+            self.completed.emit(False, f"Ollama 초기화 중 오류가 발생했습니다: {exc}")
 
 
 class QueryParseWorker(QThread):

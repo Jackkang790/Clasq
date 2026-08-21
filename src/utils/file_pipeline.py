@@ -63,6 +63,50 @@ class FilePreprocessError(Exception):
 
 
 # =========================================================
+# [폴백 태그] 내용 분석이 실패한 경우에만 사용하는 확장자 기반 태거
+# =========================================================
+class ExtensionTagger:
+    """내용 분석 실패 시 확장자로 기본 태그를 결정하는 클래스"""
+
+    IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff', '.tif')
+    TEXT_EXTENSIONS = ('.txt', '.md', '.markdown', '.csv', '.log', '.json', '.xml', '.yaml', '.yml', '.html', '.htm')
+    DOCUMENT_EXTENSIONS = ('.xlsx', '.xls', '.hwp', '.hwpx', '.doc', '.docx', '.pdf')
+    PRESENTATION_EXTENSIONS = ('.ppt', '.pptx')
+
+    IMAGE_TAG = "이미지"
+    ANIMATION_TAG = "움짤"
+    TEXT_TAG = "텍스트"
+    DOCUMENT_TAG = "문서"
+    PRESENTATION_TAG = "ppt"
+    DEFAULT_TAG = "미분류"
+
+    @classmethod
+    def tag_for(cls, file_path: str) -> str:
+        """확장자(및 GIF 프레임 수)에 따른 기본 태그를 반환합니다."""
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext == '.gif':
+            return cls.ANIMATION_TAG if cls.is_animated_gif(file_path) else cls.IMAGE_TAG
+        if ext in cls.IMAGE_EXTENSIONS:
+            return cls.IMAGE_TAG
+        if ext in cls.TEXT_EXTENSIONS:
+            return cls.TEXT_TAG
+        if ext in cls.PRESENTATION_EXTENSIONS:
+            return cls.PRESENTATION_TAG
+        if ext in cls.DOCUMENT_EXTENSIONS:
+            return cls.DOCUMENT_TAG
+        return cls.DEFAULT_TAG
+
+    @staticmethod
+    def is_animated_gif(file_path: str) -> bool:
+        """프레임이 여러 개인 움직이는 GIF인지 판별합니다."""
+        try:
+            with Image.open(file_path) as image:
+                return bool(getattr(image, "is_animated", False)) and getattr(image, "n_frames", 1) > 1
+        except Exception:
+            return False
+
+
+# =========================================================
 # [Step 1] 파일 원문/데이터 추출 클래스 (TextExtractor)
 # =========================================================
 class TextExtractor:
@@ -416,6 +460,7 @@ class FileAnalyzer:
         
         return {
             "original_name": file_name,
+            "file_path": file_path,
             "file_extension": ext,
             "file_size_bytes": size,
             "analyzed_at": datetime.now().isoformat(),
@@ -652,8 +697,9 @@ Example JSON output format:
     # 예외 발생 시 안전하게 기본값을 채워주는 폴백(Fallback) 함수
     # ---------------------------------------------------------
     def _build_fallback_response(self, file_info: Dict[str, Any], error_message: str) -> Dict[str, Any]:
-        """AI 분석 실패 시 프로그램 멈춤 없이 최소 메타데이터로 구성된 실패 응답 JSON 반환"""
+        """내용 분석 실패 시 확장자 기반 기본 태그를 부착한 폴백 응답 JSON 반환"""
         default_name = file_info["original_name"].rsplit('.', 1)[0]
+        fallback_tag = ExtensionTagger.tag_for(file_info.get("file_path") or file_info["original_name"])
         return {
             "@TYPE": "@DB",
             "status": "FAILED",
@@ -661,9 +707,9 @@ Example JSON output format:
             "metadata": {
                 "@TYPE": "@DB",
                 "display_name": default_name,
-                "tags": [],
-                "description": f"분석 실패: {error_message}",
-                "ai_comment": f"#분석실패 / 코멘트: {error_message}",
+                "tags": [fallback_tag],
+                "description": f"내용 분석 실패로 확장자 기반 태그를 부착했습니다: {error_message}",
+                "ai_comment": f"태그: #{fallback_tag} / 코멘트: 내용 분석 실패 ({error_message})",
                 "ocr_text": ""
             },
             "error": error_message

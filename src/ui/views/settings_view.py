@@ -14,6 +14,7 @@ from PySide6.QtWidgets import QFileDialog
 from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
 from src.utils.workers import FolderScanAndTagWorker
+from src.ui.widgets.progress_dialog import TaskProgressDialog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ASSETS_DIR = PROJECT_ROOT / "assets"
@@ -65,6 +66,8 @@ class SettingsView(QWidget):
         self.stacked_widget = stacked_widget
         self.core = core
         self.refresh_manager = refresh_manager
+        self._tagging_worker = None
+        self._tagging_dialog = None
         self.setObjectName("settingsView")
         self.init_layout()
         self.init_ui()
@@ -668,22 +671,39 @@ class SettingsView(QWidget):
             QMessageBox.warning(self, "태그 부착", "태그를 부착할 경로를 선택해주세요.")
             return
 
-        if getattr(self, "_tagging_worker", None) and self._tagging_worker.isRunning():
+        if self._tagging_worker and self._tagging_worker.isRunning():
             QMessageBox.information(self, "태그 부착", "이미 태깅 작업이 진행 중입니다.")
             return
 
+        self._tagging_dialog = TaskProgressDialog(
+            "파일 태깅 중", "파일을 분석하고 있습니다...", parent=self, unit="파일",
+        )
+
         self._tagging_worker = FolderScanAndTagWorker(paths, self.core)
         self._tagging_worker.progress.connect(self.on_tagging_progress)
+        self._tagging_worker.fileProgress.connect(self.on_tagging_file_progress)
         self._tagging_worker.finished.connect(self.on_tagging_finished)
         self._tagging_worker.error.connect(self.on_tagging_error)
         self._tagging_worker.start()
-        QMessageBox.information(self, "태그 부착", "AI 태깅을 시작합니다.")
+        self._tagging_dialog.show()
 
     def on_tagging_progress(self, message):
         print(message)
 
+    def on_tagging_file_progress(self, current, total, file_name):
+        """worker가 보낸 실제 처리 개수로 Progress Dialog를 갱신합니다."""
+        if self._tagging_dialog:
+            self._tagging_dialog.update_progress(current, total, file_name)
+
+    def _close_tagging_dialog(self):
+        """작업이 끝나면 Progress Dialog를 자동으로 닫습니다."""
+        if self._tagging_dialog:
+            self._tagging_dialog.close()
+            self._tagging_dialog = None
+
     def on_tagging_finished(self, summary=None):
         summary = summary or {}
+        self._close_tagging_dialog()
         self._refresh_database_views()
         QMessageBox.information(
             self, "태그 부착",
@@ -691,6 +711,7 @@ class SettingsView(QWidget):
         )
 
     def on_tagging_error(self, message):
+        self._close_tagging_dialog()
         QMessageBox.critical(self, "태그 부착 오류", message)
 
     def _refresh_database_views(self):

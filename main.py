@@ -1,9 +1,7 @@
 import os
 import sys
-import contextlib
-import io
 
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QEventLoop
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
@@ -27,6 +25,8 @@ from src.ui.views.settings_view import SettingsView
 from src.ui.components.side_bar import Sidebar
 from src.ui.components.title_bar import TitleBar
 from src.ui.refresh_manager import RefreshManager
+from src.ui.widgets.progress_dialog import TaskProgressDialog
+from src.utils.workers import OllamaInitWorker
 
 # 스택 위젯 인덱스 (Sidebar.page_changed, TitleBar 설정 드롭다운 둘 다 이 순서를 따름)
 IDX_SETTINGS = 0
@@ -193,19 +193,47 @@ class MainWindow(QMainWindow):
         anim.start()
 
 
+def load_ollama_with_progress():
+    """Ollama 모델 로딩을 worker 스레드에서 수행하며 Progress Dialog로 진행 단계를 보여줍니다."""
+    dialog = TaskProgressDialog(
+        "Ollama 모델 로딩 중", "AI 모델을 준비하고 있습니다...", unit="단계",
+    )
+    worker = OllamaInitWorker()
+    loop = QEventLoop()
+    result = {"success": False, "message": "Ollama를 초기화하지 못했습니다.", "done": False}
+
+    def on_progress(current, total, status):
+        dialog.update_progress(current, total, status=status)
+
+    def on_completed(success, message):
+        result["success"] = success
+        result["done"] = True
+        if message:
+            result["message"] = message
+        dialog.close()
+        loop.quit()
+
+    worker.progress.connect(on_progress)
+    worker.completed.connect(on_completed)
+    worker.start()
+    dialog.show()
+    if not result["done"]:
+        loop.exec()
+    worker.wait()
+    return result["success"], result["message"]
+
+
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    QMessageBox.information(None, "Ollama 연결", "Ollama 연결과 AI 모델 준비 상태를 확인합니다.")
-    # 초기화 모듈의 진단 출력은 GUI 앱에서 보이지 않으므로 숨기고,
-    # 사용자 안내는 아래 QMessageBox로 일원화한다.
-    with contextlib.redirect_stdout(io.StringIO()):
-        initialized = OllamaManager.initialize()
-    if not initialized:
-        QMessageBox.critical(None, "Ollama 연결 실패", "Ollama를 초기화하지 못했습니다. 설치·실행 상태와 모델을 확인한 뒤 다시 시도해주세요.")
+    succeeded, error_message = load_ollama_with_progress()
+    if not succeeded:
+        QMessageBox.critical(
+            None, "Ollama 연결 실패",
+            f"{error_message}\nOllama 설치·실행 상태와 모델을 확인한 뒤 다시 시도해주세요.",
+        )
         return 1
-    QMessageBox.information(None, "Ollama 연결 완료", "Ollama와 AI 모델 연결이 완료되었습니다.")
 
     qss_path = os.path.join(BASE_DIR, "assets", "styles", "light.qss")
     if os.path.exists(qss_path):

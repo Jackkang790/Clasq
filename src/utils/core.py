@@ -113,14 +113,18 @@ class ClasqCore:
             img_bytes, status = self.extractor.process_image(file_path)
             if status != "SUCCESS":
                 res = self.analyzer._build_fallback_response(
-                    {"original_name": os.path.basename(file_path)}, status)
+                    {"original_name": os.path.basename(file_path), "file_path": file_path}, status)
             else:
                 res = self.analyzer.analyze_image_bytes(file_path, img_bytes)
 
         # B. 일반 문서/데이터 파일 처리 (음성·음악 분석은 지원하지 않음)
         else:
             text, status = self.extractor.extract(file_path)
-            res = self.analyzer.analyze_document_text(file_path, text)
+            if status != "SUCCESS":
+                res = self.analyzer._build_fallback_response(
+                    {"original_name": os.path.basename(file_path), "file_path": file_path}, status)
+            else:
+                res = self.analyzer.analyze_document_text(file_path, text)
 
         # 분석 결과를 DB에 저장하고, 저장 실패도 호출자에게 명확히 알린다.
         db_result = self._save_to_db(file_path, res)

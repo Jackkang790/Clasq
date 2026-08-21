@@ -18,7 +18,7 @@ import hashlib
 import shutil
 import time
 from contextlib import contextmanager
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 import re
 
 
@@ -58,8 +58,10 @@ class FileRegistryManager:
     # ---------------------------------------------------------
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=30)
+        conn.text_factory = str  # 한글을 변환 없이 UTF-8 문자열 그대로 읽고 씁니다.
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA encoding='UTF-8'")
         return conn
 
     def _get_conn(self) -> sqlite3.Connection:
@@ -237,6 +239,17 @@ class FileRegistryManager:
         try:
             rows = conn.execute("SELECT path FROM managed_paths ORDER BY created_at").fetchall()
             return [row[0] for row in rows]
+        finally:
+            if owns_conn:
+                conn.close()
+
+    def get_managed_path_presets(self) -> List[Tuple[int, str]]:
+        """프리셋 목록용 (id, path) 조회 - 기존 managed_paths 테이블을 그대로 사용합니다."""
+        conn = self._get_conn()
+        owns_conn = self._bulk_conn is None
+        try:
+            rows = conn.execute("SELECT id, path FROM managed_paths ORDER BY id").fetchall()
+            return [(row[0], row[1]) for row in rows]
         finally:
             if owns_conn:
                 conn.close()
