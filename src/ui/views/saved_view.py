@@ -27,21 +27,6 @@ class SavedView(QWidget):
         main_layout.setContentsMargins(20, 20, 20, 20)
         main_layout.setSpacing(15)
 
-        notice_banner = QLabel("Ctrl + 1 을 누르면 백그라운드에서 실행됩니다")
-        notice_banner.setObjectName("noticeBanner")
-        notice_banner.setAlignment(Qt.AlignCenter)
-        notice_banner.setStyleSheet("""
-            QLabel#noticeBanner {
-                background-color: #F0EDFE;
-                color: #6C5CE7;
-                font-size: 13px;
-                font-weight: bold;
-                padding: 12px;
-                border-radius: 8px;
-            }
-        """)
-        main_layout.addWidget(notice_banner)
-
         header_layout = QHBoxLayout()
 
         title_label = QLabel("태그 저장 목록")

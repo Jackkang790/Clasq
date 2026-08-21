@@ -153,8 +153,6 @@ class _FileTableScreen(QWidget):
         breadcrumb.setObjectName("breadcrumb")
         root.addWidget(breadcrumb)
 
-        root.addWidget(_InfoBanner("Ctrl + 1 을 누르면 백그라운드에서 실행됩니다"))
-
         header_row = QHBoxLayout()
         title = QLabel("파일 자동 정리")
         title.setObjectName("screenTitle")
