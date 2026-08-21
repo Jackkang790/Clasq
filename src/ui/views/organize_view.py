@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QHeaderView, QFrame,
     QStackedWidget, QScrollArea, QAbstractItemView, QFileDialog,
-    QMessageBox,
+    QMessageBox, QProgressDialog,
 )
 
 ICON_GLYPH = {"txt": "📄", "image": "🖼️", "doc": "📄", "default": "📁"}
@@ -68,6 +68,7 @@ QLabel#fileIconLabel { font-size: 10px; color: #8A8CA5; }
 class _InfoBanner(QFrame):
     def __init__(self, text, parent=None):
         super().__init__(parent)
+        self._tagging_dialog = None
         self.setObjectName("infoBanner")
         lay = QHBoxLayout(self)
         lay.setContentsMargins(14, 8, 14, 8)
@@ -384,47 +385,39 @@ class OrganizeView(QWidget):
             QMessageBox.critical(self, "오류", f"파일 스캔 중 오류가 발생했습니다:\n{str(e)}")
  
     def _start_ai_tagging(self, paths):
-        """AI 태깅 시작"""
-        try:
-            self._tagging_worker.progress.connect(self._on_tagging_progress)
-            self._tagging_worker.finished.connect(self._on_tagging_finished)
-            self._tagging_worker.error.connect(self._on_tagging_error)
-            self._tagging_worker.start()
- 
-            QMessageBox.information(self, "AI 태깅", "AI 태깅을 시작합니다...")
- 
-        except Exception as e:
-            QMessageBox.critical(self, "오류", f"AI 태깅 시작 중 오류:\n{str(e)}")
- 
-    def _on_tagging_progress(self, message):
-        """태깅 진행 상황"""
-        print(f"태깅 진행: {message}")
- 
-    def _on_tagging_finished(self):
-        """태깅 완료 후 테이블 새로고침"""
-        QMessageBox.information(self, "AI 태깅 완료", "AI 태깅이 완료되었습니다!")
-        self._load_files_from_db()
- 
-    def _on_tagging_error(self, error_message):
-        """태깅 에러"""
-        QMessageBox.critical(self, "AI 태깅 오류", f"태깅 중 오류:\n{error_message}")
-
-    def _start_ai_tagging(self, paths):
         from src.utils.workers import FolderScanAndTagWorker
         self._tagging_worker = FolderScanAndTagWorker(paths, self.core)
-        self._tagging_worker.progress.connect(lambda message: print(message))
+
+        # 취소 버튼 없이(None) 진행률 알 수 없는(0,0) 인디케이터로 표시
+        self._tagging_dialog = QProgressDialog(
+            "AI 태깅을 준비하고 있습니다...", None, 0, 0, self
+        )
+        self._tagging_dialog.setWindowTitle("AI 태깅 중")
+        self._tagging_dialog.setWindowModality(Qt.WindowModal)
+        self._tagging_dialog.setMinimumDuration(0)
+        self._tagging_dialog.setAutoClose(False)
+        self._tagging_dialog.setAutoReset(False)
+
+        self._tagging_worker.progress.connect(self._tagging_dialog.setLabelText)
         self._tagging_worker.finished.connect(self._on_tagging_finished)
         self._tagging_worker.error.connect(self._on_tagging_error)
+
         self._tagging_worker.start()
-        QMessageBox.information(self, "AI 태깅", "AI 태깅을 시작합니다.")
+        self._tagging_dialog.show()
 
     def _on_tagging_finished(self):
+        if self._tagging_dialog is not None:
+            self._tagging_dialog.close()
+            self._tagging_dialog = None
         self._load_files_from_db()
         QMessageBox.information(self, "AI 태깅", "AI 태깅이 완료되었습니다.")
 
     def _on_tagging_error(self, message):
+        if self._tagging_dialog is not None:
+            self._tagging_dialog.close()
+            self._tagging_dialog = None
         QMessageBox.critical(self, "AI 태깅 오류", message)
-
+        
     def _on_auto_organize(self):
         if not self.core:
             QMessageBox.warning(self, "자동 정리", "코어 시스템이 초기화되지 않았습니다.")
@@ -472,28 +465,6 @@ class OrganizeView(QWidget):
 
     def set_grouped_result(self, groups):
         self._grouped_screen.set_groups(groups)
-
-        def get_all_files(self) -> List[Dict[str, Any]]:
-            """저장 목록 화면용 - DB에 저장된 모든 파일을 조회"""
-        conn = self._get_conn()
-        owns_conn = self._bulk_conn is None
-        try:
-            rows = conn.execute(
-                "SELECT id, file_name, tags, file_path, category FROM files ORDER BY file_name"
-            ).fetchall()
-            return [
-                {
-                    "id": row[0],
-                    "file_name": row[1],
-                    "tags": row[2] or "",
-                    "file_path": row[3],
-                    "category": row[4],
-                }
-                for row in rows
-            ]
-        finally:
-            if owns_conn:
-                conn.close()
 
     def update_tags(self, file_id: int, tags_str: str) -> bool:
         """태그 저장 목록 화면에서 인라인 수정한 태그를 DB에 반영"""

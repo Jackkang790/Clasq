@@ -1,9 +1,14 @@
-from PySide6.QtCore import Qt, QThread, Signal
+import os
+import subprocess
+import sys
+
+from PySide6.QtCore import Qt, QThread, Signal, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QScrollArea,
     QStackedLayout,
     QVBoxLayout,
@@ -52,6 +57,12 @@ class SearchView(QWidget):
                        REQ-011의 실제 LLM 의도 파서가 준비되면 이 인자로 갈아끼우면 된다.
                        시그니처: (text: str) -> dict  (SearchEngine.process_query_result가 먹는 형태)
         """
+
+        self._loading_widget = None
+        self._loading_bubble = None
+        self._loading_timer = None
+        self._loading_dot_count = 0
+
         self.setAcceptDrops(True)
 
         self.search_engine = search_engine or (
@@ -136,6 +147,38 @@ class SearchView(QWidget):
             QPushButton.sendBtn:hover {
                 background-color: #5A4AD1;
             }
+
+            QScrollBar:vertical {
+                border: none;
+                background-color: transparent; /* 배경 투명 */
+                width: 8px; /* 슬림한 너비 */
+                margin: 0px 0px 0px 0px;
+                border-radius: 4px;
+            }
+
+            QScrollBar::handle:vertical {
+                background-color: #CBD5E1; /* 기본 은은한 회색 */
+                min-height: 30px;
+                border-radius: 4px;
+            }
+
+            QScrollBar::handle:vertical:hover {
+                background-color: #94A3B8; /* 조금 더 짙은 회색 */
+            }
+
+            QScrollBar::handle:vertical:pressed {
+                background-color: #6C5CE7; /* 테마색(보라색) 포인트 */
+            }
+
+            QScrollBar::sub-line:vertical, QScrollBar::add-line:vertical {
+                border: none;
+                background: none;
+                height: 0px;
+            }
+
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
         """)
 
         self.stacked_layout = QStackedLayout(self)
@@ -168,6 +211,11 @@ class SearchView(QWidget):
         self.scroll_area = QScrollArea()
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        # 스크롤바의 최대 범위가 변경될 때(새 버블 추가 시) 자동 스크롤
+        self.scroll_area.verticalScrollBar().rangeChanged.connect(
+            lambda min_val, max_val: self.scroll_area.verticalScrollBar().setValue(max_val)
+        )
 
         self.chat_container = QWidget()
         self.chat_layout = QVBoxLayout(self.chat_container)
@@ -264,7 +312,7 @@ class SearchView(QWidget):
                 lines.append(f"경로: {file_path}")
             if ai_comment:
                 lines.append(f"메모: {ai_comment}")
-            self.add_message("\n".join(lines), is_user=False, kind="result")
+            self._add_result_bubble("\n".join(lines), is_user=False, kind="result")
 
         remaining = len(rows) - MAX_SHOWN
         if remaining > 0:
@@ -333,7 +381,10 @@ class SearchView(QWidget):
         self.scroll_to_bottom()
 
     def scroll_to_bottom(self):
-        QApplication.processEvents()
+        # UI 레이아웃 갱신이 완료된 후 스크롤을 최하단으로 이동 (10ms~30ms 후 실행)
+        QTimer.singleShot(30, self._do_scroll)
+
+    def _do_scroll(self):
         v_bar = self.scroll_area.verticalScrollBar()
         v_bar.setValue(v_bar.maximum())
 
@@ -345,3 +396,162 @@ class SearchView(QWidget):
         for url in event.mimeData().urls():
             file_path = url.toLocalFile()
             self.on_file_attached(file_path)
+
+        # -----------------------------------------------------------------
+    # 로딩(AI 응답 대기) 버블
+    # -----------------------------------------------------------------
+    def show_loading(self):
+        """AI가 검색을 처리하는 동안 대화창에 로딩 버블을 표시한다."""
+        if self._loading_widget is not None:
+            return  # 이미 표시 중이면 중복 생성 방지
+
+        self._loading_widget = QWidget()
+        row_layout = QHBoxLayout(self._loading_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+
+        self._loading_bubble = QLabel("AI가 찾는 중")
+        self._loading_bubble.setProperty("class", "aiBubble")
+        self._loading_bubble.style().unpolish(self._loading_bubble)
+        self._loading_bubble.style().polish(self._loading_bubble)
+
+        row_layout.addWidget(self._loading_bubble)
+        row_layout.addStretch()
+
+        # addStretch()로 끝나는 chat_layout의 맨 마지막 자리(스트레치 앞)에 삽입
+        self.chat_layout.insertWidget(self.chat_layout.count() - 1, self._loading_widget)
+        self.scroll_to_bottom()
+
+        self._loading_dot_count = 0
+        self._loading_timer = QTimer(self)
+        self._loading_timer.timeout.connect(self._tick_loading_dots)
+        self._loading_timer.start(400)
+
+    def _tick_loading_dots(self):
+        if self._loading_bubble is None:
+            return
+        self._loading_dot_count = (self._loading_dot_count + 1) % 4
+        dots = "." * self._loading_dot_count
+        self._loading_bubble.setText(f"AI가 찾는 중{dots}")
+
+    def hide_loading(self):
+        """로딩 버블 제거"""
+        if self._loading_timer is not None:
+            self._loading_timer.stop()
+            self._loading_timer.deleteLater()
+            self._loading_timer = None
+
+        if self._loading_widget is not None:
+            self.chat_layout.removeWidget(self._loading_widget)
+            self._loading_widget.deleteLater()
+            self._loading_widget = None
+            self._loading_bubble = None
+
+    def process_query(self, query: str):
+        self.add_message(query, is_user=True)
+        self.show_loading()
+
+        if self.core is not None:
+            self._query_worker = QueryProcessWorker(self.core, query, self)
+            self._query_worker.finished.connect(self._on_query_result)
+            self._query_worker.error.connect(self._on_query_error)
+            self._query_worker.start()
+            return
+
+        # 코어가 없는 단위 테스트·미리보기 상황에서는 기존 동기 경로를 유지합니다.
+        parsed_data = self._query_parser(query)
+        if parsed_data.get("status") == "SUCCESS":
+            parsed_data = parsed_data["data"]
+        try:
+            self._display_query_result(self.search_engine.process_query_result(parsed_data))
+        except Exception as exc:
+            self._on_query_error(str(exc))
+        finally:
+            self.hide_loading()
+
+    def _on_query_result(self, result):
+        self.hide_loading()
+        self._display_query_result(result)
+
+    def _on_query_error(self, message):
+        self.hide_loading()
+        self.add_message(f"⚠️ 검색 중 오류가 발생했습니다: {message}", is_user=False, kind="error")
+
+        # -----------------------------------------------------------------
+    # 검색 결과 파일을 실제 탐색기에서 열기
+    # -----------------------------------------------------------------
+    def open_in_explorer(self, file_path: str):
+        """검색 결과의 파일 경로를 파일 탐색기에서 선택된 상태로 연다."""
+        if not file_path:
+            return
+
+        norm_path = os.path.normpath(file_path)
+
+        if not os.path.exists(norm_path):
+            self.add_message(
+                f"⚠️ 파일을 찾을 수 없습니다 (이동되었거나 삭제됨): {norm_path}",
+                is_user=False, kind="error",
+            )
+            return
+
+        try:
+            if sys.platform.startswith("win"):
+                # 탐색기를 열고 해당 파일을 선택된 상태로 표시
+                subprocess.Popen(["explorer", f"/select,{norm_path}"])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-R", norm_path])
+            else:
+                # Linux 등: 파일 자체 선택 기능이 없어 상위 폴더만 연다
+                subprocess.Popen(["xdg-open", os.path.dirname(norm_path)])
+        except Exception as e:
+            self.add_message(
+                f"⚠️ 탐색기를 여는 중 오류가 발생했습니다: {e}",
+                is_user=False, kind="error",
+            )
+
+    def _add_result_bubble(self, text: str, file_path: str = None):
+        """검색 결과 1건을 버블 + '파일 위치 열기' 버튼으로 렌더링한다."""
+        row_layout = QHBoxLayout()
+
+        bubble_container = QWidget()
+        bubble_layout = QVBoxLayout(bubble_container)
+        bubble_layout.setContentsMargins(0, 0, 0, 0)
+        bubble_layout.setSpacing(6)
+
+        bubble = QLabel(text)
+        bubble.setWordWrap(True)
+        bubble.setProperty("class", "resultBubble")
+        bubble.style().unpolish(bubble)
+        bubble.style().polish(bubble)
+        bubble_layout.addWidget(bubble)
+
+        if file_path:
+            open_btn = QPushButton("📂 파일 위치 열기")
+            open_btn.setCursor(Qt.PointingHandCursor)
+            open_btn.setFixedHeight(28)
+            open_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #FFFFFF;
+                    color: #6C5CE7;
+                    font-size: 12px;
+                    font-weight: bold;
+                    border: 1px solid #DCD6FF;
+                    border-radius: 6px;
+                    padding: 0 10px;
+                }
+                QPushButton:hover {
+                    background-color: #F0EDFE;
+                }
+                QPushButton:pressed {
+                    background-color: #E0D9FC;
+                }
+            """)
+            open_btn.clicked.connect(
+                lambda checked=False, p=file_path: self.open_in_explorer(p)
+            )
+            bubble_layout.addWidget(open_btn, 0, Qt.AlignLeft)
+
+        row_layout.addWidget(bubble_container)
+        row_layout.addStretch()
+
+        self.chat_layout.insertLayout(self.chat_layout.count() - 1, row_layout)
+        self.scroll_to_bottom()
