@@ -49,6 +49,15 @@ class FolderAnalysisPlanWorker(QThread):
             text_indexer = LocalTextIndexer(self.db_path)
             legacy_ppt = text_indexer.discover_legacy_ppt(self.folder_paths)
             plan["text_index"] = text_indexer.synchronize([*files, *legacy_ppt])
+            # This worker is already off the GUI thread. Prebuild the immutable
+            # snapshot so the next SearchView query uses the warm path.
+            from .search_snapshot import refresh_search_snapshot
+            search_snapshot = refresh_search_snapshot(self.db_path)
+            plan["search_snapshot"] = {
+                "rows": len(search_snapshot.records),
+                "build_time_ms": search_snapshot.build_time_ms,
+                "approximate_bytes": search_snapshot.approximate_bytes,
+            }
             print(f"[PERF] plan refresh: {time.perf_counter() - started:.3f} sec")
             perf = plan.get("performance", {})
             print(f"[PLAN PERF] scanned={len(plan['scanned'])}")

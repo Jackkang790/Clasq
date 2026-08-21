@@ -22,6 +22,17 @@ from typing import Dict, Any, Optional, List
 import re
 
 
+def _invalidate_search_cache(db_path: str) -> None:
+    try:
+        from .search_snapshot import invalidate_search_snapshot
+    except ImportError:
+        try:
+            from search_snapshot import invalidate_search_snapshot
+        except ImportError:
+            return
+    invalidate_search_snapshot(db_path)
+
+
 class FileRegistryManager:
     """
     [DB / 물리 파일 담당 클래스]
@@ -220,6 +231,8 @@ class FileRegistryManager:
                         "DELETE FROM files WHERE file_path = ?", (file_path,))
                     removed.append(file_path)
             conn.commit()
+            if removed:
+                _invalidate_search_cache(self.db_path)
         finally:
             if owns_conn:
                 conn.close()
@@ -303,6 +316,7 @@ class FileRegistryManager:
 
             conn.execute("DELETE FROM file_fingerprint_cache WHERE file_path = ?", (file_path,))
             conn.commit()
+            _invalidate_search_cache(self.db_path)
             result["success"] = True
             result["file_path"] = final_path
             return result
@@ -377,6 +391,7 @@ class FileRegistryManager:
             )
             conn.execute("DELETE FROM file_fingerprint_cache WHERE file_path = ?", (file_path,))
             conn.commit()
+            _invalidate_search_cache(self.db_path)
             result["success"] = True
             return result
         except Exception as exc:
@@ -416,6 +431,7 @@ class FileRegistryManager:
                 ],
             )
             conn.commit()
+            _invalidate_search_cache(self.db_path)
             return len(records)
         finally:
             if owns_conn:
@@ -443,6 +459,7 @@ class FileRegistryManager:
                 ],
             )
             conn.commit()
+            _invalidate_search_cache(self.db_path)
             return len(records)
         finally:
             if owns_conn:
@@ -463,6 +480,7 @@ class FileRegistryManager:
             conn.execute("DELETE FROM file_text_index;")
             conn.execute("DELETE FROM sqlite_sequence WHERE name='files';")
             conn.commit()
+            _invalidate_search_cache(self.db_path)
         finally:
             if owns_conn:
                 conn.close()
@@ -500,6 +518,7 @@ class FileRegistryManager:
                     new_path, file_id)
             )
             conn.commit()
+            _invalidate_search_cache(self.db_path)
             return True
 
         except Exception as e:
@@ -532,6 +551,7 @@ class FileRegistryManager:
             # 3. DB 레코드 삭제
             conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
             conn.commit()
+            _invalidate_search_cache(self.db_path)
             return True
 
         except Exception as e:
@@ -576,6 +596,7 @@ class FileRegistryManager:
                 (safe_name, new_path, file_id)
             )
             conn.commit()
+            _invalidate_search_cache(self.db_path)
             return True
 
         except Exception as e:

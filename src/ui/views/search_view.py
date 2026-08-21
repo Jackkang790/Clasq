@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from src.ui.widgets.fileupload_view import FileUploadView
 from src.ui.ai_workers import AIFileWorker, AIServiceContainer
 from src.utils.search_engine import SearchEngine
+from src.utils.search_normalization import normalize_query_token
 
 # 문장에서 확장자 필터를 뽑아낼 때 쓰는 후보 목록.
 # SearchEngine.STOP_WORDS와 겹치는 확장자 표기를 그대로 재사용한다.
@@ -30,11 +31,47 @@ _FILE_TYPE_ALIASES = {
     "ppt": ["ppt", "pptx"],
     "파워포인트": ["ppt", "pptx"],
     "프레젠테이션": ["ppt", "pptx"],
+    "pdf": ["pdf"],
+    "피디에프": ["pdf"],
+    "한글파일": ["hwp", "hwpx"],
+    "hwp": ["hwp"],
+    "hwpx": ["hwpx"],
+    "워드": ["docx"],
+    "워드파일": ["docx"],
+    "docx": ["docx"],
+    "엑셀": ["xlsx"],
+    "엑셀파일": ["xlsx"],
+    "xlsx": ["xlsx"],
+    "텍스트": ["txt"],
+    "txt": ["txt"],
+    "마크다운": ["md", "markdown"],
+    "markdown": ["md", "markdown"],
+    "md": ["md", "markdown"],
+    "csv": ["csv"],
+    "사진": ["jpg", "jpeg", "png", "gif", "webp"],
+    "이미지": ["jpg", "jpeg", "png", "gif", "webp"],
+    "그림": ["jpg", "jpeg", "png", "gif", "webp"],
+    "png": ["png"],
+    "jpg": ["jpg"],
+    "jpeg": ["jpeg"],
+    "gif": ["gif"],
+    "webp": ["webp"],
+    "음성": ["mp3", "wav"],
+    "오디오": ["mp3", "wav"],
+    "mp3": ["mp3"],
+    "wav": ["wav"],
+    "영상": ["mp4", "mov", "mkv", "avi"],
+    "동영상": ["mp4", "mov", "mkv", "avi"],
+    "mp4": ["mp4"],
+    "mov": ["mov"],
+    "mkv": ["mkv"],
+    "avi": ["avi"],
 }
 
 _QUERY_STOP_WORDS = {
     "관련", "관련된", "찾아줘", "찾아주세요", "검색", "검색해줘",
-    "보여줘", "보여주세요", "알려줘", "파일", "문서",
+    "검색해주세요", "보여줘", "보여주세요", "알려줘", "파일", "문서", "자료", "관련한",
+    "있는", "폴더",
 }
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif"}
@@ -455,8 +492,17 @@ class SearchView(QWidget):
         extensions = []
         keywords = []
 
-        for w in words:
-            w_clean = w.strip(".,!?").lower()
+        index = 0
+        while index < len(words):
+            w = words[index]
+            raw_clean = w.strip(".,!?;:'\"()[]{}").casefold()
+            next_clean = (normalize_query_token(words[index + 1])
+                          if index + 1 < len(words) else "")
+            if raw_clean == "한글" and next_clean == "파일":
+                extensions.extend(["hwp", "hwpx"])
+                index += 2
+                continue
+            w_clean = raw_clean if raw_clean in _FILE_TYPE_ALIASES else normalize_query_token(w)
             if w_clean == "pptx":
                 extensions.append("pptx")
             elif w_clean in _FILE_TYPE_ALIASES:
@@ -464,7 +510,9 @@ class SearchView(QWidget):
             elif w_clean in _EXTENSION_CANDIDATES:
                 extensions.append(w_clean)
             elif w_clean not in _QUERY_STOP_WORDS:
-                keywords.append(w)
+                if w_clean:
+                    keywords.append(w_clean)
+            index += 1
 
         return {
             "@TYPE": "@검색",

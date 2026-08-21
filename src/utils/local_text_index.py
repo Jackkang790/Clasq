@@ -1,8 +1,4 @@
-"""Incremental, Qwen-free local document text index.
-
-PPTX is the first supported extractor. The service deliberately has no AI
-dependencies and can be extended with additional local extractors later.
-"""
+"""Incremental, Qwen-free local document text index."""
 
 from __future__ import annotations
 
@@ -18,8 +14,17 @@ from .core import DEFAULT_EXCLUDED_DIRECTORIES
 
 
 class LocalTextIndexer:
-    SUPPORTED_EXTENSIONS = {".pptx"}
-    KNOWN_EXTENSIONS = {".ppt", ".pptx"}
+    SUPPORTED_EXTENSIONS = {
+        ".pptx", ".pdf", ".docx", ".txt", ".md", ".markdown",
+        ".csv", ".json", ".xml", ".yaml", ".yml",
+    }
+    KNOWN_EXTENSIONS = SUPPORTED_EXTENSIONS | {".ppt"}
+    EXTRACTOR_TYPES = {
+        ".pptx": "python-pptx", ".pdf": "pypdf", ".docx": "python-docx",
+        ".txt": "plain-text", ".md": "plain-text", ".markdown": "plain-text",
+        ".csv": "plain-text", ".json": "plain-text", ".xml": "plain-text",
+        ".yaml": "plain-text", ".yml": "plain-text",
+    }
 
     def __init__(
         self,
@@ -76,6 +81,8 @@ class LocalTextIndexer:
         stats = {
             "candidates": len(candidates), "indexed": 0, "success": 0,
             "failed": 0, "unsupported": 0, "unchanged": 0, "deleted": 0,
+            "no_text": 0, "truncated": 0,
+            "by_extension": {},
         }
         try:
             existing = {
@@ -95,16 +102,25 @@ class LocalTextIndexer:
             now = time.strftime("%Y-%m-%d %H:%M:%S")
             for path in candidates:
                 normalized = self._normalized(path)
+                extension = Path(path).suffix.lower()
+                extension_stats = stats["by_extension"].setdefault(extension, {
+                    "eligible": 0, "indexed": 0, "unchanged": 0,
+                    "success": 0, "failed": 0, "unsupported": 0,
+                    "no_text": 0, "truncated": 0,
+                })
+                extension_stats["eligible"] += 1
                 try:
                     file_stat = os.stat(path)
                 except OSError:
                     stats["failed"] += 1
+                    extension_stats["failed"] += 1
                     continue
 
                 old = existing.get(normalized)
                 if (old is not None and old[2] == file_stat.st_size
                         and old[3] == file_stat.st_mtime_ns):
                     stats["unchanged"] += 1
+                    extension_stats["unchanged"] += 1
                     continue
 
                 fingerprint = fingerprints.get(normalized)
@@ -117,22 +133,44 @@ class LocalTextIndexer:
                         file_hash = self.hash_function(path)
                     except OSError:
                         stats["failed"] += 1
+                        extension_stats["failed"] += 1
                         continue
 
-                extension = Path(path).suffix.lower()
                 if extension == ".ppt":
                     text, status, extractor_type = "", "unsupported", "legacy-ppt"
                     stats["unsupported"] += 1
+                    extension_stats["unsupported"] += 1
                 else:
                     try:
-                        # Reuse the existing python-pptx extraction implementation.
-                        text = self.extractor._read_pptx(path)
-                        status, extractor_type = "success", "python-pptx"
-                        stats["success"] += 1
+                        extract_result = "SUCCESS"
+                        if hasattr(self.extractor, "extract_for_index"):
+                            text, extract_result = self.extractor.extract_for_index(path)
+                            if extract_result not in {"SUCCESS", "TRUNCATED", "NO_TEXT"}:
+                                raise RuntimeError(extract_result)
+                        elif extension == ".pptx" and hasattr(self.extractor, "_read_pptx"):
+                            # Compatibility for existing test/custom PPTX extractors.
+                            text = self.extractor._read_pptx(path)
+                        else:
+                            raise RuntimeError(f"No local extractor for {extension}")
+                        status = extract_result.casefold()
+                        extractor_type = self.EXTRACTOR_TYPES[extension]
+                        if status == "no_text":
+                            stats["no_text"] += 1
+                            extension_stats["no_text"] += 1
+                        elif status == "truncated":
+                            stats["success"] += 1
+                            stats["truncated"] += 1
+                            extension_stats["success"] += 1
+                            extension_stats["truncated"] += 1
+                        else:
+                            stats["success"] += 1
+                            extension_stats["success"] += 1
                     except Exception as exc:
                         text = str(exc)
-                        status, extractor_type = "failed", "python-pptx"
+                        status = "failed"
+                        extractor_type = self.EXTRACTOR_TYPES.get(extension, "unknown")
                         stats["failed"] += 1
+                        extension_stats["failed"] += 1
 
                 conn.execute(
                     """
@@ -153,6 +191,7 @@ class LocalTextIndexer:
                      text, extractor_type, status, now),
                 )
                 stats["indexed"] += 1
+                extension_stats["indexed"] += 1
 
             indexed_paths = conn.execute("SELECT file_path FROM file_text_index").fetchall()
             for (indexed_path,) in indexed_paths:
@@ -162,6 +201,9 @@ class LocalTextIndexer:
                     )
                     stats["deleted"] += 1
             conn.commit()
+            if stats["indexed"] or stats["deleted"]:
+                from .search_snapshot import invalidate_search_snapshot
+                invalidate_search_snapshot(self.db_path)
         finally:
             conn.close()
         stats["elapsed_sec"] = round(time.perf_counter() - started, 3)

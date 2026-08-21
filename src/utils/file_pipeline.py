@@ -42,9 +42,13 @@ except ImportError:
 
 # 2. 문서 및 이미지 파싱용 외부 제3자 라이브러리
 from pypdf import PdfReader                  # PDF 파일 텍스트 추출
-# from docx import Document                    # Word(.docx) 파일 문단 텍스트 추출
+from docx import Document                    # Word(.docx) 파일 문단 텍스트 추출
 import openpyxl                              # Excel(.xlsx) 셀 데이터 추출
 from PIL import Image, UnidentifiedImageError # 이미지 리사이징 및 손상 검사
+try:
+    from .search_config import SearchIndexConfig
+except ImportError:
+    from search_config import SearchIndexConfig
 
 # 3. 외부 선택 설치 패키지 안전검사 (try-except 모듈 동적 로딩)
 # olefile (구버전 HWP 바이너리 파싱용)
@@ -118,6 +122,7 @@ class TextExtractor:
         self.max_media_bytes = max_media_size_mb * 1024 * 1024
         
         self._whisper_model = None  # Whisper 모델 지연 로딩(필요할 때 메모리 적재)
+        self.search_index_config = SearchIndexConfig()
 
     def _sanitize_text(self, text: str) -> str:
         """문서 내부의 깨진 문자나 시스템 특수 제어 문자를 안전하게 제거하는 정제 함수"""
@@ -273,6 +278,41 @@ class TextExtractor:
             file_name = os.path.basename(file_path)
             return f"문서 파일명: {file_name} (내부 데이터 해석 실패: {str(e)})", "SUCCESS"
 
+    def extract_for_index(self, file_path: str, max_chars: int | None = None) -> Tuple[str, str]:
+        """Extract local-search text without the short AI prompt limit.
+
+        This method intentionally supports only formats approved for the local
+        index. It raises normal preprocessing errors to let the index record a
+        failed status instead of indexing an AI fallback sentence.
+        """
+        if not os.path.isfile(file_path):
+            return "", "ERROR: 존재하지 않는 파일입니다."
+        ext = os.path.splitext(file_path)[1].lower()
+        readers = {
+            '.txt': self._read_txt, '.md': self._read_txt, '.markdown': self._read_txt,
+            '.csv': self._read_txt, '.json': self._read_txt, '.xml': self._read_txt,
+            '.yaml': self._read_txt, '.yml': self._read_txt,
+            '.docx': self._read_docx,
+            '.pdf': lambda path: self._read_pdf(
+                path, max_chars=(max_chars or self.search_index_config.pdf_max_chars) + 1
+            ),
+            '.pptx': self._read_pptx,
+        }
+        reader = readers.get(ext)
+        if reader is None:
+            return "", f"ERROR: 검색 인덱스를 지원하지 않는 형식입니다 ({ext})"
+        try:
+            text = self._sanitize_text(reader(file_path))
+            limit = max_chars if max_chars is not None \
+                else self.search_index_config.max_chars_for(ext)
+            if ext == '.pdf' and not text.strip():
+                return "", "NO_TEXT"
+            truncated = len(text) > limit
+            return text[:max(1, int(limit))].strip(), \
+                ("TRUNCATED" if truncated else "SUCCESS")
+        except Exception as exc:
+            return "", f"ERROR: {exc}"
+
     # --- 포맷별 하위 파싱 메서드 모음 ---
 
     def _read_txt(self, path: str) -> str:
@@ -287,7 +327,7 @@ class TextExtractor:
             except Exception as e:
                 raise FilePreprocessError(f"텍스트 인코딩 읽기 실패: {str(e)}")
 
-    def _read_pdf(self, path: str) -> str:
+    def _read_pdf(self, path: str, max_chars: int | None = None) -> str:
         """PDF 문서의 각 페이지에서 텍스트 읽기 및 암호화 여부 체크"""
         try:
             reader = PdfReader(path)
@@ -297,13 +337,14 @@ class TextExtractor:
             extracted_text = []
             total_len = 0
 
+            character_limit = self.max_chars if max_chars is None else max_chars
             for page in reader.pages:
                 page_text = page.extract_text() or ""
                 if page_text.strip():
                     extracted_text.append(page_text)
                     total_len += len(page_text)
 
-                if total_len >= self.max_chars:
+                if total_len >= character_limit:
                     break
 
             return "\n".join(extracted_text)

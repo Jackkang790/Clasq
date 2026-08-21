@@ -208,6 +208,9 @@ pyrightconfig.json
 .idea/
 assets/preset.json
 *.db
+benchmarks/*_results.json
+benchmarks/folder_recommendation_evaluation.json
+benchmarks/search_ground_truth_review.csv
 
 tempCodeRunnerFile.py
 
