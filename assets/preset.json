@@ -1,0 +1,30 @@
+{
+    "presets": [
+        {
+            "preset_name": "1",
+            "targets": [
+                {
+                    "name": "새 폴더",
+                    "path": "D:\\새 폴더",
+                    "type": "folder",
+                    "extensions": [
+                        ".gif",
+                        ".hwpx",
+                        ".jpg",
+                        ".png",
+                        ".yaml",
+                        ".yml"
+                    ]
+                }
+            ],
+            "extensions": [
+                ".gif",
+                ".hwpx",
+                ".jpg",
+                ".png",
+                ".yaml",
+                ".yml"
+            ]
+        }
+    ]
+}
