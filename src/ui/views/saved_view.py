@@ -95,12 +95,12 @@ class SavedView(QWidget):
                 color: #636E72;
                 font-size: 13px;
                 font-weight: bold;
-                padding: 8px 12px;
+                padding: 10px;
                 border: none;
                 border-bottom: 1px solid #EBEBEE;
             }
             QTableWidget::item {
-                padding: 6px 10px;
+                padding: 8px;
                 border-bottom: 1px solid #F1F2F6;
             }
             QTableWidget::item:selected {
@@ -111,11 +111,59 @@ class SavedView(QWidget):
                 background-color: #E0D9FC;
                 color: #000000;
             }
-            QLineEdit {
-                border: 1px solid #6C5CE7;
+
+            QScrollBar:vertical {
+                border: none;
+                background-color: transparent;
+                width: 8px;
+                margin: 0px 0px 0px 0px;
                 border-radius: 4px;
-                padding: 2px 4px;
-                background-color: #FFFFFF;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #CBD5E1;
+                min-height: 30px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #94A3B8;
+            }
+            QScrollBar::handle:vertical:pressed {
+                background-color: #6C5CE7;
+            }
+            QScrollBar::sub-line:vertical, QScrollBar::add-line:vertical {
+                border: none;
+                background: none;
+                height: 0px;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+
+            QScrollBar:horizontal {
+                border: none;
+                background-color: transparent;
+                height: 8px;
+                margin: 0px 0px 0px 0px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:horizontal {
+                background-color: #CBD5E1;
+                min-width: 30px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background-color: #94A3B8;
+            }
+            QScrollBar::handle:horizontal:pressed {
+                background-color: #6C5CE7;
+            }
+            QScrollBar::sub-line:horizontal, QScrollBar::add-line:horizontal {
+                border: none;
+                background: none;
+                width: 0px;
+            }
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                background: none;
             }
         """)
 
