@@ -135,6 +135,45 @@ class _GroupedFolderCard(QFrame):
         outer.addLayout(icons_row)
 
 
+class _RecommendationCard(QFrame):
+    acceptRequested = Signal(str)
+    changeRequested = Signal(str)
+    skipRequested = Signal(str)
+
+    def __init__(self, plan_item, parent=None):
+        super().__init__(parent)
+        self.setObjectName("groupCard")
+        self.file_path = plan_item.file_path
+        result = plan_item.result
+        layout = QVBoxLayout(self)
+        title = QLabel(os.path.basename(plan_item.file_path))
+        title.setObjectName("groupTitle")
+        layout.addWidget(title)
+        layout.addWidget(QLabel(f"현재 위치: {plan_item.current_folder}"))
+        recommended = result.selected_folder_path or "적합한 기존 폴더 없음"
+        layout.addWidget(QLabel(f"추천 폴더: {recommended}"))
+        layout.addWidget(QLabel(
+            f"local score: {result.local_score:.3f} · "
+            f"상태: {plan_item.review_status} / {result.status}"
+        ))
+        reason = QLabel(f"이유: {result.reason}")
+        reason.setWordWrap(True)
+        layout.addWidget(reason)
+        buttons = QHBoxLayout()
+        accept = _make_btn("수락", primary=True)
+        change = _make_btn("다른 폴더")
+        skip = _make_btn("건너뛰기")
+        accept.setEnabled(bool(result.selected_folder_path))
+        accept.clicked.connect(lambda: self.acceptRequested.emit(self.file_path))
+        change.clicked.connect(lambda: self.changeRequested.emit(self.file_path))
+        skip.clicked.connect(lambda: self.skipRequested.emit(self.file_path))
+        buttons.addWidget(accept)
+        buttons.addWidget(change)
+        buttons.addWidget(skip)
+        buttons.addStretch()
+        layout.addLayout(buttons)
+
+
 def _make_btn(text, primary=False):
     btn = QPushButton(text)
     btn.setObjectName("primaryBtn" if primary else "secondaryBtn")
@@ -244,6 +283,10 @@ class _FileTableScreen(QWidget):
 class _GroupedScreen(QWidget):
     organizeConfirmed = Signal()
     editRequested = Signal()
+    acceptRequested = Signal(str)
+    changeRequested = Signal(str)
+    skipRequested = Signal(str)
+    acceptAllRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -281,10 +324,13 @@ class _GroupedScreen(QWidget):
 
         bottom_row = QHBoxLayout()
         bottom_row.addStretch()
+        accept_all_btn = _make_btn("전체 수락")
+        accept_all_btn.clicked.connect(self.acceptAllRequested.emit)
         edit_btn = _make_btn("수정하기")
         edit_btn.clicked.connect(self.editRequested.emit)
         confirm_btn = _make_btn("이대로 정리하기", primary=True)
         confirm_btn.clicked.connect(self.organizeConfirmed.emit)
+        bottom_row.addWidget(accept_all_btn)
         bottom_row.addWidget(edit_btn)
         bottom_row.addWidget(confirm_btn)
         root.addLayout(bottom_row)
@@ -303,6 +349,19 @@ class _GroupedScreen(QWidget):
                 self.group_layout.count() - 1,
                 _GroupedFolderCard(name, files, total_count=total_count),
             )
+
+    def set_recommendations(self, plan_items):
+        while self.group_layout.count() > 1:
+            item = self.group_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+        for plan_item in plan_items:
+            card = _RecommendationCard(plan_item)
+            card.acceptRequested.connect(self.acceptRequested.emit)
+            card.changeRequested.connect(self.changeRequested.emit)
+            card.skipRequested.connect(self.skipRequested.emit)
+            self.group_layout.insertWidget(self.group_layout.count() - 1, card)
 
 
 # ---------------------------------------------------------------------------
@@ -324,6 +383,9 @@ class OrganizeView(QWidget):
         self._analysis_plan = None
         self._plan_worker = None
         self._tag_worker = None
+        self._recommendation_worker = None
+        self._recommendation_items = {}
+        self._folder_profiles = {}
         self._post_batch_stats = None
         self._table_page = 0
         self._table_page_size = 200
@@ -348,6 +410,10 @@ class OrganizeView(QWidget):
         self._table_screen.next_page_btn.clicked.connect(lambda: self._change_table_page(1))
         self._grouped_screen.editRequested.connect(self._show_table)
         self._grouped_screen.organizeConfirmed.connect(self._on_organize_confirmed)
+        self._grouped_screen.acceptRequested.connect(self._accept_recommendation)
+        self._grouped_screen.skipRequested.connect(self._skip_recommendation)
+        self._grouped_screen.changeRequested.connect(self._change_recommendation)
+        self._grouped_screen.acceptAllRequested.connect(self._accept_all_recommendations)
 
     # ---- 화면 전환 ----
     def _show_grouped(self):
@@ -674,6 +740,9 @@ class OrganizeView(QWidget):
         self._table_screen.batch_combo.setEnabled(not busy)
 
     def _build_groups_from_db(self, completion_message=None):
+        if self._selected_path:
+            self._start_recommendation_plan(completion_message)
+            return
         started = time.perf_counter()
         analyzed = get_files_for_organize(self.db_path, self._scanned_files)
         grouped = {}
@@ -694,6 +763,114 @@ class OrganizeView(QWidget):
         self._inner_stack.setCurrentWidget(self._grouped_screen)
         print(f"[PERF] group refresh: {time.perf_counter() - started:.3f} sec")
 
+    def _start_recommendation_plan(self, completion_message=None):
+        if self._recommendation_worker and self._recommendation_worker.isRunning():
+            return
+        from src.recommendation.scope_policy import RootInboxOrganizationPolicy
+
+        analyzed = get_files_for_organize(self.db_path, self._scanned_files)
+        scope_policy = RootInboxOrganizationPolicy()
+        analyzed = [
+            row for row in analyzed
+            if scope_policy.is_organizable_file(row["file_path"], self._selected_path)
+        ]
+        if not analyzed:
+            self._grouped_screen.set_recommendations([])
+            self._grouped_screen.status_banner.set_text("추천할 AI 분석 완료 파일이 없습니다.")
+            self._grouped_screen.status_banner.setVisible(True)
+            self._inner_stack.setCurrentWidget(self._grouped_screen)
+            return
+        from src.ui.recommendation_worker import FolderRecommendationWorker
+        self._grouped_screen.status_banner.set_text(
+            completion_message or "실제 기존 폴더를 기준으로 추천 계획을 생성하고 있습니다..."
+        )
+        self._grouped_screen.status_banner.setVisible(True)
+        self._inner_stack.setCurrentWidget(self._grouped_screen)
+        self._recommendation_worker = FolderRecommendationWorker(
+            self._selected_path, self._scanned_files,
+            [row["file_path"] for row in analyzed], db_path=self.db_path, parent=self,
+        )
+        self._recommendation_worker.progress.connect(self._on_recommendation_progress)
+        self._recommendation_worker.completed.connect(self._on_recommendation_completed)
+        self._recommendation_worker.cancelled.connect(self._on_recommendation_completed)
+        self._recommendation_worker.failed.connect(self._on_recommendation_failed)
+        self._recommendation_worker.finished.connect(self._on_recommendation_finished)
+        self._recommendation_worker.start()
+
+    def _on_recommendation_progress(self, current, total, file_name):
+        self._grouped_screen.status_banner.set_text(
+            f"추천 계획 생성 {current:,} / {total:,} · {file_name}"
+        )
+
+    def _on_recommendation_completed(self, payload):
+        self._folder_profiles = dict(payload["profiles"])
+        self._recommendation_items = {item.file_path: item for item in payload["items"]}
+        self._render_recommendation_items()
+        stats = payload["stats"]
+        self._grouped_screen.status_banner.set_text(
+            f"추천 계획 생성 완료 · {stats['recommendation_count']:,}개 파일 · "
+            f"실제 폴더 profile {stats['profile_count']:,}개 · "
+            "수락 전에는 파일을 이동하지 않습니다."
+        )
+
+    def _on_recommendation_failed(self, message):
+        self._grouped_screen.status_banner.set_text(f"추천 계획 생성 실패: {message}")
+
+    def _on_recommendation_finished(self):
+        if self._recommendation_worker:
+            self._recommendation_worker.deleteLater()
+            self._recommendation_worker = None
+
+    def _render_recommendation_items(self):
+        self._grouped_screen.set_recommendations(tuple(self._recommendation_items.values()))
+
+    def _accept_recommendation(self, file_path):
+        item = self._recommendation_items.get(file_path)
+        if item is None:
+            return
+        item = item.refresh_stale()
+        self._recommendation_items[file_path] = (
+            item if item.review_status == "STALE" else item.accept()
+        )
+        self._render_recommendation_items()
+
+    def _skip_recommendation(self, file_path):
+        item = self._recommendation_items.get(file_path)
+        if item is not None:
+            self._recommendation_items[file_path] = item.skip()
+            self._render_recommendation_items()
+
+    def _change_recommendation(self, file_path):
+        item = self._recommendation_items.get(file_path)
+        if item is None or not self._selected_path:
+            return
+        selected = QFileDialog.getExistingDirectory(
+            self, "기존 추천 폴더 선택", self._selected_path, QFileDialog.ShowDirsOnly
+        )
+        if not selected:
+            return
+        normalized = os.path.normcase(os.path.abspath(selected))
+        profile = next((profile for profile in self._folder_profiles.values()
+                        if os.path.normcase(os.path.abspath(profile.folder_path)) == normalized), None)
+        if profile is None:
+            QMessageBox.warning(
+                self, "선택 불가", "managed root 내부의 기존 비어 있지 않은 폴더만 선택할 수 있습니다."
+            )
+            return
+        self._recommendation_items[file_path] = item.override(
+            profile.folder_id, profile.folder_path,
+            tuple(self._folder_profiles),
+        )
+        self._render_recommendation_items()
+
+    def _accept_all_recommendations(self):
+        for file_path, original in tuple(self._recommendation_items.items()):
+            item = original.refresh_stale()
+            self._recommendation_items[file_path] = (
+                item if item.review_status == "STALE" else item.accept()
+            )
+        self._render_recommendation_items()
+
     @staticmethod
     def _icon_kind(file_path):
         extension = os.path.splitext(file_path)[1].lower()
@@ -706,6 +883,16 @@ class OrganizeView(QWidget):
         return "default"
 
     def _on_organize_confirmed(self):
+        for file_path, item in tuple(self._recommendation_items.items()):
+            self._recommendation_items[file_path] = item.refresh_stale()
+        self._render_recommendation_items()
+        accepted = sum(item.review_status in {"ACCEPTED", "OVERRIDDEN"}
+                       for item in self._recommendation_items.values())
+        QMessageBox.information(
+            self, "정리 계획 검토",
+            f"{accepted:,}개 추천을 수락했습니다. 현재 단계에서는 실제 파일 이동을 수행하지 않습니다.",
+        )
+        return
         QMessageBox.information(
             self,
             "정리 계획 확인",
