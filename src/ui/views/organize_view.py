@@ -42,6 +42,14 @@ QPushButton#secondaryBtn {
     border-radius: 8px; padding: 6px 18px; font-size: 13px;
 }
 QPushButton#secondaryBtn:hover { background-color: #F0F0F7; }
+/* setting_view의 경로삭제(delRoot) 버튼과 동일한 스타일 */
+QPushButton#delRoot {
+    padding: 8px 16px; border-radius: 8px; background-color: #EF4444;
+    color: white; font-weight: bold; border: none;
+}
+QPushButton#delRoot:hover { background-color: #DC2626; }
+QPushButton#delRoot:pressed { background-color: #B91C1C; }
+QPushButton#delRoot:disabled { background-color: #F3B5B5; color: #FFFFFF; }
 QTableWidget#fileTable {
     background-color: white; border: 1px solid #E4E6EF; border-radius: 10px;
     gridline-color: #E4E6EF; font-size: 13px; color: #2D2D3A;
@@ -133,9 +141,13 @@ class _GroupedFolderCard(QFrame):
         outer.addLayout(icons_row)
 
 
-def _make_btn(text, primary=False):
+def _make_btn(text, primary=False, danger=False):
     btn = QPushButton(text)
-    btn.setObjectName("primaryBtn" if primary else "secondaryBtn")
+    if danger:
+        # setting_view의 경로삭제 버튼(objectName=delRoot) 디자인을 그대로 재사용한다.
+        btn.setObjectName("delRoot")
+    else:
+        btn.setObjectName("primaryBtn" if primary else "secondaryBtn")
     btn.setCursor(Qt.PointingHandCursor)
     btn.setMinimumHeight(36)
     return btn
@@ -148,6 +160,7 @@ class _FileTableScreen(QWidget):
     autoOrganizeRequested = Signal()
     addPathRequested = Signal(str)
     presetLoadRequested = Signal()
+    removePathRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -167,12 +180,15 @@ class _FileTableScreen(QWidget):
 
         preset_btn = _make_btn("프리셋 불러오기")
         preset_btn.clicked.connect(self.presetLoadRequested.emit)
-        add_path_btn = _make_btn("경로 추가하기")
+        add_path_btn = _make_btn("경로 추가")
         add_path_btn.clicked.connect(self._on_add_path)
-        auto_btn = _make_btn("자동 정리하기", primary=True)
+        remove_path_btn = _make_btn("경로 삭제", danger=True)
+        remove_path_btn.clicked.connect(self.removePathRequested.emit)
+        auto_btn = _make_btn("자동정리", primary=True)
         auto_btn.clicked.connect(self.autoOrganizeRequested.emit)
         header_row.addWidget(preset_btn)
         header_row.addWidget(add_path_btn)
+        header_row.addWidget(remove_path_btn)
         header_row.addWidget(auto_btn)
         root.addLayout(header_row)
 
@@ -215,6 +231,15 @@ class _FileTableScreen(QWidget):
             self.table.setItem(r, 1, QTableWidgetItem(tag))
             self.table.setItem(r, 2, QTableWidgetItem(path))
 
+    def selected_rows(self):
+        """사용자가 선택한 행 번호를 내림차순으로 반환합니다. (기존 다중 선택 방식 그대로 사용)"""
+        return sorted({index.row() for index in self.table.selectionModel().selectedRows()}, reverse=True)
+
+    def remove_rows(self, rows):
+        """지정한 행을 표에서만 제거합니다. (DB·preset.json·실제 파일은 건드리지 않음)"""
+        for row in rows:
+            self.table.removeRow(row)
+
     def _on_add_path(self):
         path = QFileDialog.getExistingDirectory(self, "정리할 폴더 선택")
         if path:
@@ -245,8 +270,8 @@ class _GroupedScreen(QWidget):
         title.setObjectName("screenTitle")
         header_row.addWidget(title)
         header_row.addStretch()
-        header_row.addWidget(_make_btn("경로 추가하기"))
-        header_row.addWidget(_make_btn("자동 정리하기", primary=True))
+        header_row.addWidget(_make_btn("경로 추가"))
+        header_row.addWidget(_make_btn("자동정리", primary=True))
         root.addLayout(header_row)
 
         scroll = QScrollArea()
@@ -349,6 +374,7 @@ class OrganizeView(QWidget):
         self._table_screen.autoOrganizeRequested.connect(self._on_auto_organize)
         self._table_screen.addPathRequested.connect(self._on_path_added)
         self._table_screen.presetLoadRequested.connect(self._on_load_preset)
+        self._table_screen.removePathRequested.connect(self._on_remove_path)
         self._grouped_screen.editRequested.connect(self._show_table)
         self._grouped_screen.organizeConfirmed.connect(self._on_organize_confirmed)
         if self.core:
@@ -369,6 +395,18 @@ class OrganizeView(QWidget):
             self._table_screen.set_rows(rows)
         except Exception as exc:
             QMessageBox.critical(self, "파일 목록 오류", f"파일 목록을 불러오지 못했습니다.\n{exc}")
+
+    def _on_remove_path(self):
+        """선택한 항목을 이번 정리 대상에서만 제외합니다.
+
+        DB(`file_manager.db`, `managed_paths`)·`assets/preset.json`·실제 파일은 그대로 둔다.
+        """
+        rows = self._table_screen.selected_rows()
+        if not rows:
+            QMessageBox.information(self, "경로 삭제", "삭제할 경로를 선택해주세요.")
+            return
+
+        self._table_screen.remove_rows(rows)
 
     def _read_presets(self):
         """assets/preset.json의 presets 배열을 읽습니다. (프리셋 조회에 DB를 사용하지 않음)
@@ -573,7 +611,13 @@ class OrganizeView(QWidget):
             QMessageBox.warning(self, "자동 정리", "코어 시스템이 초기화되지 않았습니다.")
             return
         try:
-            self.grouped_files = self.core.group_files_by_tags(self.core.get_files_for_organize())
+            # 경로 삭제로 목록에서 빠진 파일은 자동정리 대상에서도 제외한다.
+            target_paths = {row[2] for row in self._current_table_rows()}
+            organize_files = [
+                file_info for file_info in self.core.get_files_for_organize()
+                if file_info["file_path"] in target_paths
+            ]
+            self.grouped_files = self.core.group_files_by_tags(organize_files)
             if not self.grouped_files:
                 QMessageBox.information(self, "정리 대상 없음", "태그가 있는 파일이 없습니다. 먼저 태그를 부착해주세요.")
                 return

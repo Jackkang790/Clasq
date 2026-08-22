@@ -40,6 +40,7 @@
 | `TitleBar` | `src/ui/components/title_bar.py` | 커스텀 타이틀바(최소화/최대화/닫기, 드래그 이동). |
 | `_AnimatedIconButton` | `src/ui/components/title_bar.py` | 타이틀바용 호버 애니메이션 아이콘 버튼. |
 | `FileUploadView` | `src/ui/widgets/fileupload_view.py` | 드래그&드롭 및 파일 선택 업로드 위젯. |
+| `_make_btn()` (함수) | `src/ui/views/organize_view.py` | 정리 화면의 공용 버튼 팩토리. `primary`는 보라색 강조 버튼, `danger`는 `setting_view`의 경로삭제 버튼과 동일한 `delRoot` 스타일(빨간색, hover/pressed/disabled 포함)을 적용한다. |
 
 ## 화면 뷰
 
@@ -47,8 +48,8 @@
 | --- | --- | --- |
 | `SettingsView` | `src/ui/views/settings_view.py` | 경로 관리와 **파일 태깅의 소유 화면**. 경로 추가/삭제, 프리셋 저장(`assets/preset.json`), 태깅 실행 시 `TaskProgressDialog`를 띄우고 `FolderScanAndTagWorker`의 진행 시그널로 실제 진행률을 갱신하며 완료·오류 시 자동으로 닫는다. |
 | `CheckBoxHeader` | `src/ui/views/settings_view.py` | 경로 테이블의 전체 선택 체크박스 헤더. |
-| `OrganizeView` | `src/ui/views/organize_view.py` | 정리 화면. `[프리셋 불러오기] [경로 추가하기] [자동 정리하기]` 버튼 배치를 유지하며, **프리셋은 `assets/preset.json`에서만** 읽는다(`_read_presets`). 선택한 프리셋의 `targets`를 `type`(file/folder)·`path`·`extensions`에 따라 정리 대상 목록에 반영하고(`_apply_preset`), 파일 없음/JSON 오류 시에도 예외 없이 `프리셋 없음` 또는 안내 메시지를 보여준다. |
-| `_FileTableScreen` | `src/ui/views/organize_view.py` | 정리 대상 파일 테이블 화면. `presetLoadRequested`, `addPathRequested`, `autoOrganizeRequested` 시그널을 발생시킨다. |
+| `OrganizeView` | `src/ui/views/organize_view.py` | 정리 화면. 버튼 배치는 `[프리셋 불러오기] [경로 추가] [경로 삭제] [자동정리]`이다. **프리셋은 `assets/preset.json`에서만** 읽고(`_read_presets`), 선택한 프리셋의 `targets`를 `type`(file/folder)·`path`·`extensions`에 따라 정리 대상에 반영한다(`_apply_preset`). `_on_remove_path()`는 선택한 항목을 **현재 정리 대상 목록에서만** 제외하며 DB·`preset.json`·실제 파일은 건드리지 않고, 선택이 없으면 `삭제할 경로를 선택해주세요.` 안내만 보여준다. `_on_auto_organize()`는 현재 테이블에 남아 있는 경로만 정리 대상으로 삼는다. 파일 없음/JSON 오류 시에도 예외 없이 `프리셋 없음` 또는 안내 메시지를 보여준다. |
+| `_FileTableScreen` | `src/ui/views/organize_view.py` | 정리 대상 파일 테이블 화면. `presetLoadRequested`, `addPathRequested`, `removePathRequested`, `autoOrganizeRequested` 시그널을 발생시키고, `selected_rows()` / `remove_rows()`로 기존 다중 선택 방식을 그대로 쓴 행 제거를 제공한다. |
 | `_GroupedScreen` | `src/ui/views/organize_view.py` | 자동 그룹화 결과 미리보기 화면. |
 | `_GroupedFolderCard` | `src/ui/views/organize_view.py` | 그룹(폴더) 단위 카드 위젯. |
 | `_FileIconCard` | `src/ui/views/organize_view.py` | 파일 종류별 아이콘 카드. |
