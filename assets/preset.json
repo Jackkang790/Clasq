@@ -86,6 +86,50 @@
                 ".yaml",
                 ".yml"
             ]
+        },
+        {
+            "preset_name": "2",
+            "targets": [
+                {
+                    "name": "새 폴더 (2)",
+                    "path": "D:\\새 폴더 (2)",
+                    "type": "folder",
+                    "extensions": [
+                        ".gif",
+                        ".hwpx",
+                        ".jpg",
+                        ".png",
+                        ".txt",
+                        ".yaml",
+                        ".yml"
+                    ]
+                }
+            ],
+            "extensions": [
+                ".gif",
+                ".hwpx",
+                ".jpg",
+                ".png",
+                ".txt",
+                ".yaml",
+                ".yml"
+            ]
+        },
+        {
+            "preset_name": "3",
+            "targets": [
+                {
+                    "name": "와이어프레임",
+                    "path": "D:\\와이어프레임",
+                    "type": "folder",
+                    "extensions": [
+                        ".jpg"
+                    ]
+                }
+            ],
+            "extensions": [
+                ".jpg"
+            ]
         }
     ]
 }
