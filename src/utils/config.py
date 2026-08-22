@@ -14,4 +14,10 @@ TEXT_EXTENSIONS = (
 )
 DOCUMENT_EXTENSIONS = (".pdf", ".docx", ".xlsx", ".pptx", ".hwp", ".hwpx")
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif")
-SUPPORTED_EXTENSIONS = TEXT_EXTENSIONS + DOCUMENT_EXTENSIONS + IMAGE_EXTENSIONS
+# 음악·영상은 내용 분석 없이 확장자 기반 기본 태그(음악/영상)만 부착한다.
+AUDIO_EXTENSIONS = (".mp3", ".wav", ".flac", ".m4a", ".aac", ".ogg", ".wma")
+VIDEO_EXTENSIONS = (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm")
+SUPPORTED_EXTENSIONS = (
+    TEXT_EXTENSIONS + DOCUMENT_EXTENSIONS + IMAGE_EXTENSIONS
+    + AUDIO_EXTENSIONS + VIDEO_EXTENSIONS
+)

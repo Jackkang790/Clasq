@@ -6,7 +6,7 @@ import os
 import shutil
 from typing import Dict, Any, List
 
-from .file_pipeline import TextExtractor, FileAnalyzer
+from .file_pipeline import TextExtractor, FileAnalyzer, ExtensionTagger
 from .query_parser import SearchQueryParser
 from .db_manager import FileRegistryManager
 from .search_engine import SearchEngine
@@ -101,15 +101,17 @@ class ClasqCore:
                 "message": f"파일을 찾을 수 없습니다: {file_path}"
             }
 
-        if os.path.splitext(file_path)[1].lower() in {".mp3", ".wav", ".m4a", ".mp4", ".mkv", ".avi"}:
-            return {
-                "@TYPE": "@ERROR",
-                "status": "FAILED",
-                "message": "음성 및 음악 파일 분석은 지원하지 않습니다.",
-            }
+        extension = os.path.splitext(file_path)[1].lower()
+        media_extensions = ExtensionTagger.AUDIO_EXTENSIONS + ExtensionTagger.VIDEO_EXTENSIONS
 
-        # A. 이미지 파일 처리
-        if self.extractor.is_image_file(file_path):
+        # A. 음악·영상 파일: 내용 분석은 지원하지 않으므로 확장자 기반 기본 태그만 부착
+        if extension in media_extensions:
+            res = self.analyzer._build_fallback_response(
+                {"original_name": os.path.basename(file_path), "file_path": file_path},
+                "음성·영상 파일은 내용 분석을 지원하지 않습니다.")
+
+        # B. 이미지 파일 처리
+        elif self.extractor.is_image_file(file_path):
             img_bytes, status = self.extractor.process_image(file_path)
             if status != "SUCCESS":
                 res = self.analyzer._build_fallback_response(
@@ -117,7 +119,7 @@ class ClasqCore:
             else:
                 res = self.analyzer.analyze_image_bytes(file_path, img_bytes)
 
-        # B. 일반 문서/데이터 파일 처리 (음성·음악 분석은 지원하지 않음)
+        # C. 일반 문서/데이터 파일 처리
         else:
             text, status = self.extractor.extract(file_path)
             if status != "SUCCESS":
