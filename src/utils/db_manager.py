@@ -18,7 +18,7 @@ import hashlib
 import shutil
 import time
 from contextlib import contextmanager
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List
 import re
 
 
@@ -239,17 +239,6 @@ class FileRegistryManager:
         try:
             rows = conn.execute("SELECT path FROM managed_paths ORDER BY created_at").fetchall()
             return [row[0] for row in rows]
-        finally:
-            if owns_conn:
-                conn.close()
-
-    def get_managed_path_presets(self) -> List[Tuple[int, str]]:
-        """프리셋 목록용 (id, path) 조회 - 기존 managed_paths 테이블을 그대로 사용합니다."""
-        conn = self._get_conn()
-        owns_conn = self._bulk_conn is None
-        try:
-            rows = conn.execute("SELECT id, path FROM managed_paths ORDER BY id").fetchall()
-            return [(row[0], row[1]) for row in rows]
         finally:
             if owns_conn:
                 conn.close()

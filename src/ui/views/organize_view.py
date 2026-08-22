@@ -10,7 +10,9 @@ MainWindow의 QStackedWidget에 addWidget(OrganizeView())로 바로 꽂아서 �
 두 화면을 오갑니다. (전역 light.qss가 있으면 그걸 우선 따르고,
 이 파일의 스타일은 objectName 기반 최소한의 폴백 스타일만 넣었습니다.)
 """
+import json
 import os
+from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import (
@@ -19,6 +21,9 @@ from PySide6.QtWidgets import (
     QStackedWidget, QScrollArea, QAbstractItemView, QFileDialog,
     QMessageBox, QProgressDialog, QInputDialog,
 )
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+PRESET_PATH = PROJECT_ROOT / "assets" / "preset.json"
 
 ICON_GLYPH = {"txt": "📄", "image": "🖼️", "doc": "📄", "default": "📁"}
 
@@ -365,31 +370,109 @@ class OrganizeView(QWidget):
         except Exception as exc:
             QMessageBox.critical(self, "파일 목록 오류", f"파일 목록을 불러오지 못했습니다.\n{exc}")
 
-    def _on_load_preset(self):
-        """managed_paths에 저장된 경로를 프리셋으로 불러와 정리 목록에 추가합니다."""
-        if not self.core:
-            QMessageBox.warning(self, "프리셋 불러오기", "코어 시스템이 초기화되지 않았습니다.")
-            return
+    def _read_presets(self):
+        """assets/preset.json의 presets 배열을 읽습니다. (프리셋 조회에 DB를 사용하지 않음)
+
+        반환값: (프리셋 목록, 오류 메시지). 파일이 없거나 비어 있으면 빈 목록을,
+        JSON 파싱에 실패하면 예외 없이 오류 메시지를 돌려준다.
+        """
+        if not PRESET_PATH.exists():
+            return [], None
 
         try:
-            presets = self.core.registry.get_managed_path_presets()
-        except Exception as exc:
-            QMessageBox.critical(self, "프리셋 불러오기", f"프리셋을 불러오지 못했습니다.\n{exc}")
+            with open(PRESET_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            return [], "프리셋을 불러올 수 없습니다.\npreset.json 파일을 확인해주세요."
+
+        presets = data.get("presets", []) if isinstance(data, dict) else []
+        return [
+            preset for preset in presets
+            if isinstance(preset, dict) and str(preset.get("preset_name", "")).strip()
+        ], None
+
+    def _on_load_preset(self):
+        """assets/preset.json의 preset_name을 보여주고 선택한 프리셋을 정리 대상에 적용합니다."""
+        presets, error = self._read_presets()
+        if error:
+            QMessageBox.warning(self, "프리셋 불러오기", error)
             return
 
         if not presets:
-            QMessageBox.information(self, "프리셋 불러오기", "저장된 프리셋이 없습니다.")
+            QMessageBox.information(self, "프리셋 불러오기", "프리셋 없음")
             return
 
-        names = [str(preset_id) for preset_id, _ in presets]
+        names = [str(preset["preset_name"]) for preset in presets]
         selected, ok = QInputDialog.getItem(
-            self, "프리셋 불러오기", "불러올 프리셋 번호를 선택하세요:", names, 0, False
+            self, "프리셋 불러오기", "프리셋을 선택하세요:", names, 0, False
         )
         if not ok or not selected:
             return
 
-        path = next(path for preset_id, path in presets if str(preset_id) == selected)
-        self._on_path_added(path)
+        preset = next(p for p in presets if str(p["preset_name"]) == selected)
+        self._apply_preset(preset)
+
+    def _apply_preset(self, preset):
+        """선택한 프리셋의 targets(type/path/extensions)를 정리 대상 목록에 반영합니다."""
+        preset_extensions = self._normalize_extensions(preset.get("extensions"))
+        rows = self._current_table_rows()
+        known_paths = {row[2] for row in rows}
+        added, missing = 0, []
+
+        for target in preset.get("targets", []):
+            if not isinstance(target, dict):
+                continue
+            path = str(target.get("path", "")).strip()
+            if not path:
+                continue
+            if not os.path.exists(path):
+                missing.append(path)
+                continue
+
+            extensions = self._normalize_extensions(target.get("extensions")) or preset_extensions
+            for file_path, file_name in self._collect_target_files(target, path, extensions):
+                if file_path in known_paths:
+                    continue
+                known_paths.add(file_path)
+                rows.append((file_name, "", file_path))
+                added += 1
+
+        self._table_screen.set_rows(rows)
+        self._show_table()
+
+        message = f"'{preset['preset_name']}' 프리셋에서 {added}개 파일을 정리 대상에 추가했습니다."
+        if missing:
+            message += "\n\n다음 경로를 찾지 못해 건너뛰었습니다:\n" + "\n".join(missing)
+        QMessageBox.information(self, "프리셋 불러오기", message)
+
+    def _collect_target_files(self, target, path, extensions):
+        """target type에 따라 파일 하나 또는 폴더 하위 파일을 (경로, 이름)으로 모읍니다."""
+        if target.get("type") == "file":
+            if extensions and not path.lower().endswith(extensions):
+                return []
+            return [(path, os.path.basename(path))]
+
+        if not self.core:
+            return []
+        return [
+            (file_info["file_path"], file_info["file_name"])
+            for file_info in self.core.scan_directory_files(path)
+            if not extensions or file_info["file_path"].lower().endswith(extensions)
+        ]
+
+    @staticmethod
+    def _normalize_extensions(extensions):
+        if not isinstance(extensions, list):
+            return ()
+        return tuple(ext.lower() for ext in extensions if isinstance(ext, str) and ext.strip())
+
+    def _current_table_rows(self):
+        """현재 테이블에 표시된 행을 (파일명, 태그, 경로) 튜플 목록으로 반환합니다."""
+        table = self._table_screen.table
+        return [
+            (table.item(row, 0).text(), table.item(row, 1).text(), table.item(row, 2).text())
+            for row in range(table.rowCount())
+        ]
 
     def _on_path_added(self, path):
         """경로 추가 처리 (파일 스캔 및 테이블 업데이트)"""
@@ -413,12 +496,7 @@ class OrganizeView(QWidget):
                 return
  
             # 스캔된 파일들을 테이블에 추가
-            current_rows = []
-            for i in range(self._table_screen.table.rowCount()):
-                file_name = self._table_screen.table.item(i, 0).text()
-                tag = self._table_screen.table.item(i, 1).text()
-                file_path = self._table_screen.table.item(i, 2).text()
-                current_rows.append((file_name, tag, file_path))
+            current_rows = self._current_table_rows()
  
             # 새로운 파일들 추가
             for file_info in scanned_files:
