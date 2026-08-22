@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QTableWidget, QTableWidgetItem, QHeaderView, QFrame,
     QStackedWidget, QScrollArea, QAbstractItemView, QFileDialog,
-    QMessageBox, QProgressDialog,
+    QMessageBox, QProgressDialog, QInputDialog,
 )
 
 ICON_GLYPH = {"txt": "📄", "image": "🖼️", "doc": "📄", "default": "📁"}
@@ -142,6 +142,7 @@ def _make_btn(text, primary=False):
 class _FileTableScreen(QWidget):
     autoOrganizeRequested = Signal()
     addPathRequested = Signal(str)
+    presetLoadRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -159,10 +160,13 @@ class _FileTableScreen(QWidget):
         header_row.addWidget(title)
         header_row.addStretch()
 
+        preset_btn = _make_btn("프리셋 불러오기")
+        preset_btn.clicked.connect(self.presetLoadRequested.emit)
         add_path_btn = _make_btn("경로 추가하기")
         add_path_btn.clicked.connect(self._on_add_path)
         auto_btn = _make_btn("자동 정리하기", primary=True)
         auto_btn.clicked.connect(self.autoOrganizeRequested.emit)
+        header_row.addWidget(preset_btn)
         header_row.addWidget(add_path_btn)
         header_row.addWidget(auto_btn)
         root.addLayout(header_row)
@@ -339,6 +343,7 @@ class OrganizeView(QWidget):
 
         self._table_screen.autoOrganizeRequested.connect(self._on_auto_organize)
         self._table_screen.addPathRequested.connect(self._on_path_added)
+        self._table_screen.presetLoadRequested.connect(self._on_load_preset)
         self._grouped_screen.editRequested.connect(self._show_table)
         self._grouped_screen.organizeConfirmed.connect(self._on_organize_confirmed)
         if self.core:
@@ -359,6 +364,32 @@ class OrganizeView(QWidget):
             self._table_screen.set_rows(rows)
         except Exception as exc:
             QMessageBox.critical(self, "파일 목록 오류", f"파일 목록을 불러오지 못했습니다.\n{exc}")
+
+    def _on_load_preset(self):
+        """managed_paths에 저장된 경로를 프리셋으로 불러와 정리 목록에 추가합니다."""
+        if not self.core:
+            QMessageBox.warning(self, "프리셋 불러오기", "코어 시스템이 초기화되지 않았습니다.")
+            return
+
+        try:
+            presets = self.core.registry.get_managed_path_presets()
+        except Exception as exc:
+            QMessageBox.critical(self, "프리셋 불러오기", f"프리셋을 불러오지 못했습니다.\n{exc}")
+            return
+
+        if not presets:
+            QMessageBox.information(self, "프리셋 불러오기", "저장된 프리셋이 없습니다.")
+            return
+
+        names = [str(preset_id) for preset_id, _ in presets]
+        selected, ok = QInputDialog.getItem(
+            self, "프리셋 불러오기", "불러올 프리셋 번호를 선택하세요:", names, 0, False
+        )
+        if not ok or not selected:
+            return
+
+        path = next(path for preset_id, path in presets if str(preset_id) == selected)
+        self._on_path_added(path)
 
     def _on_path_added(self, path):
         """경로 추가 처리 (파일 스캔 및 테이블 업데이트)"""
