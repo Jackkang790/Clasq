@@ -65,13 +65,3 @@ python main.py
 | `AI_MAX_TOKENS` | `1000` | 응답 최대 토큰 |
 | `VIDEO_AI_TIMEOUT` | `900` | 동영상 분석 타임아웃 (초) |
 | `FFMPEG_PATH` | _(시스템 PATH)_ | ffmpeg 실행 파일 경로 |
-
----
-
-## 브랜치 구조
-
-| 브랜치 | 내용 |
-|---|---|
-| `main` | 안정 릴리스 |
-| `AI` | AI 분석·추천 기능 개발 |
-| `FrontEnd` | UI/UX 개발 |
