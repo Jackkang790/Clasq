@@ -522,36 +522,29 @@ class FileRegistryManager:
             if self._bulk_conn is None:  # bulk_session이 아닐 때만 닫음
                 conn.close()
 
-    def delete_file(self, file_id: int) -> bool:
+    def delete_record(self, file_id: int) -> bool:
         """
-        [물리적 파일 삭제 및 DB 레코드 제거]
-        지정된 file_id의 실제 파일을 디스크 및 DB에서 삭제.
+        [DB 레코드만 삭제]
+        지정된 file_id의 files 레코드만 DELETE 한다.
+        실제 파일/폴더는 절대 건드리지 않는다(os.remove, unlink, shutil.rmtree 사용 금지).
         """
         conn = self._get_conn()
         try:
-            # 1. DB에서 파일 경로 찾기
-            row = conn.execute(
-                "SELECT file_path FROM files WHERE id = ?", (file_id,)).fetchone()
-            if not row:
-                return False
-
-            target_path = row[0]
-
-            # 2. 물리적 디스크에서 파일 삭제 (파일이 존재할 경우만)
-            if os.path.exists(target_path):
-                os.remove(target_path)
-
-            # 3. DB 레코드 삭제
-            conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+            cursor = conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
             conn.commit()
-            return True
+            return cursor.rowcount > 0
 
         except Exception as e:
-            print(f"[파일 삭제 실패]: {e}")
+            print(f"[DB 레코드 삭제 실패]: {e}")
             return False
         finally:
             if self._bulk_conn is None:
                 conn.close()
+
+    def delete_file(self, file_id: int) -> bool:
+        """delete_record()의 이전 이름. DB 레코드만 삭제하며 실제 파일은 유지된다."""
+        return self.delete_record(file_id)
+
     def get_all_files(self) -> List[Dict[str, Any]]:
         """저장 목록 화면용 - DB에 저장된 모든 파일을 조회"""
         conn = self._get_conn()

@@ -557,11 +557,21 @@ class SearchView(QWidget):
     # 검색 결과 파일을 실제 탐색기에서 열기
     # -----------------------------------------------------------------
     def open_in_explorer(self, file_path: str):
-        """검색 결과의 파일 경로를 파일 탐색기에서 선택된 상태로 연다."""
-        if not file_path:
+        """검색 결과에 저장된 실제 경로를 기준으로 탐색기를 연다.
+
+        파일이면 파일이 들어 있는 폴더를, 폴더면 그 폴더 자체를 연다.
+        경로가 비어 있으면 기본 폴더(내 문서 등)를 여는 대신 안내 메시지만 표시한다.
+        """
+        cleaned = (file_path or "").strip().strip('"')
+        if not cleaned:
+            self.add_message(
+                "⚠️ 검색 결과에 경로 정보가 없어 폴더를 열 수 없습니다.",
+                is_user=False, kind="error",
+            )
             return
 
-        norm_path = os.path.normpath(file_path)
+        # DB에 상대 경로가 저장된 경우에도 탐색기가 해석할 수 있는 절대 경로로 바꾼다.
+        norm_path = os.path.abspath(os.path.normpath(cleaned))
 
         if not os.path.exists(norm_path):
             self.add_message(
@@ -570,15 +580,22 @@ class SearchView(QWidget):
             )
             return
 
+        is_dir = os.path.isdir(norm_path)
+        parent_dir = norm_path if is_dir else os.path.dirname(norm_path)
+
         try:
             if sys.platform.startswith("win"):
-                # 탐색기를 열고 해당 파일을 선택된 상태로 표시
-                subprocess.Popen(["explorer", f"/select,{norm_path}"])
+                if is_dir:
+                    subprocess.Popen(f'explorer "{norm_path}"')
+                else:
+                    # 경로에 공백이 있으면 리스트 인자 방식은 explorer가 경로를 해석하지 못해
+                    # 기본 폴더(내 문서)를 열어버린다. 따옴표로 감싼 명령 문자열로 전달한다.
+                    subprocess.Popen(f'explorer /select,"{norm_path}"')
             elif sys.platform == "darwin":
-                subprocess.Popen(["open", "-R", norm_path])
+                subprocess.Popen(["open", norm_path] if is_dir else ["open", "-R", norm_path])
             else:
                 # Linux 등: 파일 자체 선택 기능이 없어 상위 폴더만 연다
-                subprocess.Popen(["xdg-open", os.path.dirname(norm_path)])
+                subprocess.Popen(["xdg-open", parent_dir])
         except Exception as e:
             self.add_message(
                 f"⚠️ 탐색기를 여는 중 오류가 발생했습니다: {e}",

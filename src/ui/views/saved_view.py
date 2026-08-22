@@ -318,16 +318,19 @@ class SavedView(QWidget):
         reply = QMessageBox.question(
             self,
             "삭제 확인",
-            f"'{file_name}' 파일을 실제 디스크와 DB에서 삭제하시겠습니까?\n이 작업은 되돌릴 수 없습니다.",
+            f"'{file_name}' 항목을 DB 저장 목록에서 삭제하시겠습니까?\n실제 파일은 삭제되지 않고 그대로 유지됩니다.",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
             return
 
-        if self.core.registry.delete_file(file_id):
+        if self.core.registry.delete_record(file_id):
             self.load_data()
             self._refresh_database_views()
-            QMessageBox.information(self, "완료", f"'{file_name}' 파일이 삭제되었습니다.")
+            QMessageBox.information(
+                self, "완료",
+                f"'{file_name}' 항목을 DB에서 삭제했습니다. (실제 파일은 유지됨)",
+            )
         else:
-            QMessageBox.warning(self, "삭제 실패", f"'{file_name}' 파일 삭제 중 오류가 발생했습니다.")
+            QMessageBox.warning(self, "삭제 실패", f"'{file_name}' DB 레코드 삭제 중 오류가 발생했습니다.")

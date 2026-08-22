@@ -17,7 +17,8 @@
 #    - Ollama API 통신 중 네트워크 단절(ConnectionError), 타임아웃(Timeout), JSON 파싱 깨짐(JSONDecodeError) 세분화 예외 처리
 #    - AI 분석 실패 시 프로그램 종료 방지 및 최소 메타데이터를 담은 폴백(Fallback) 응답(JSON) 반환
 # 4. 전체 프로세스 중단 방지 (Graceful Degradation)
-#    - 최상단 extract() 메서드에 거대한 try-except 블록을 두어 파싱 오류 시에도 파일명 기반 대체 텍스트로 태깅 프로세스 완주 보장
+#    - 최상단 extract() 메서드에 거대한 try-except 블록을 두어 파싱 오류 시에도 프로세스가 멈추지 않고
+#      확장자 기반 폴백 태깅으로 이어지도록 보장 (파일명을 본문 대신 사용하지 않음)
 # =====================================================================
 
 # 1. 파이썬 표준 라이브러리 (기능별)
@@ -72,12 +73,16 @@ class ExtensionTagger:
     TEXT_EXTENSIONS = ('.txt', '.md', '.markdown', '.csv', '.log', '.json', '.xml', '.yaml', '.yml', '.html', '.htm')
     DOCUMENT_EXTENSIONS = ('.xlsx', '.xls', '.hwp', '.hwpx', '.doc', '.docx', '.pdf')
     PRESENTATION_EXTENSIONS = ('.ppt', '.pptx')
+    AUDIO_EXTENSIONS = ('.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.wma')
+    VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.webm')
 
     IMAGE_TAG = "이미지"
     ANIMATION_TAG = "움짤"
     TEXT_TAG = "텍스트"
     DOCUMENT_TAG = "문서"
     PRESENTATION_TAG = "ppt"
+    AUDIO_TAG = "음악"
+    VIDEO_TAG = "영상"
     DEFAULT_TAG = "미분류"
 
     @classmethod
@@ -94,6 +99,10 @@ class ExtensionTagger:
             return cls.PRESENTATION_TAG
         if ext in cls.DOCUMENT_EXTENSIONS:
             return cls.DOCUMENT_TAG
+        if ext in cls.AUDIO_EXTENSIONS:
+            return cls.AUDIO_TAG
+        if ext in cls.VIDEO_EXTENSIONS:
+            return cls.VIDEO_TAG
         return cls.DEFAULT_TAG
 
     @staticmethod
@@ -243,17 +252,17 @@ class TextExtractor:
 
             clean_text = self._sanitize_text(text)
 
-            # 💡 텍스트 추출이 빈 값이어도 파일명 자체를 전달하여 AI 태깅 수행
+            # 내용이 비어 있으면 파일명으로 태깅하지 않고 실패로 처리해
+            # 호출자가 확장자 기반 폴백 태그를 쓰도록 한다.
             if not clean_text or not clean_text.strip():
-                clean_text = f"문서 파일명: {os.path.basename(file_path)} (내부 텍스트 내용 없음)"
+                return "", "ERROR: 문서 내부에서 추출할 텍스트 내용이 없습니다."
 
             return clean_text[:self.max_chars].strip(), "SUCCESS"
 
         except Exception as e:
-            # 💡 [버그 수정] HWP/PDF/DOCX 등 파싱 중 FilePreprocessError 등의 예외가 터져도
-            # 백엔드 스레드가 멈추지 않고 파일명으로 대체하여 AI 태깅이 수월하게 진행되도록 최상단에서 방어합니다.
-            file_name = os.path.basename(file_path)
-            return f"문서 파일명: {file_name} (내부 데이터 해석 실패: {str(e)})", "SUCCESS"
+            # 파싱 예외가 나도 스레드가 멈추지 않도록 방어하되, 파일명을 본문 대신
+            # 넘기지 않고 실패 상태를 반환하여 확장자 기반 폴백 태깅으로 이어지게 한다.
+            return "", f"ERROR: 내부 데이터 해석 실패 ({str(e)})"
 
     # --- 포맷별 하위 파싱 메서드 모음 ---
 
@@ -501,7 +510,10 @@ class FileAnalyzer:
 
     @staticmethod
     def _normalize_tags(tags: Any, file_info: Dict[str, Any]) -> list[str]:
-        """일반적인 분류어를 제거하고 파일명·메타데이터 기반의 구체 태그를 보장합니다."""
+        """일반적인 분류어를 제거하고 내용 기반의 구체 태그를 보장합니다.
+
+        태그가 하나도 남지 않으면 파일 제목이 아니라 확장자 기반 기본 태그를 사용합니다.
+        """
         generic = {"일반", "파일", "문서", "자료", "데이터", "기타", "이미지", "사진", "untitled"}
         normalized, seen = [], set()
         for tag in tags if isinstance(tags, list) else []:
@@ -513,9 +525,8 @@ class FileAnalyzer:
             if len(normalized) == 5:
                 break
         if not normalized:
-            stem = os.path.splitext(file_info["original_name"])[0]
-            words = re.findall(r"[가-힣A-Za-z0-9]{2,}", stem)
-            normalized = words[:3] or [file_info["file_extension"].lstrip(".") or "미분류"]
+            normalized = [ExtensionTagger.tag_for(
+                file_info.get("file_path") or file_info["original_name"])]
         return normalized
 
     # ---------------------------------------------------------
@@ -523,14 +534,12 @@ class FileAnalyzer:
     # ---------------------------------------------------------
     def analyze_document_text(self, file_path: str, extracted_text: str) -> Dict[str, Any]:
         """문서 텍스트 원문을 로컬 텍스트 LLM에 전달하여 제목, 태그, 요약 JSON을 추출하는 함수"""
-        file_name = os.path.basename(file_path)
         file_info = self._get_file_info(file_path)
 
         prompt = f"""
 You are a professional file metadata analyzer. Analyze the provided text content and generate structured metadata in JSON format.
 
 [File Information]
-- Original Filename: {file_name}
 - File Extension: {file_info["file_extension"]}
 - Extracted Metadata Hints: {file_info["content_hints"]}
 - Content Text:
@@ -539,7 +548,7 @@ You are a professional file metadata analyzer. Analyze the provided text content
 [Output Requirements]
 Return ONLY a valid JSON object with the following keys:
 1. "display_name": A clean, concise, and descriptive title for the file in Korean (Do NOT include file extension).
-2. "tags": An array of 2 to 5 specific keyword strings (without '#' symbol). Prefer named subjects, project names, document type, dates, and filename/metadata terms. Never use vague tags such as "일반", "파일", "문서", "자료", or "데이터" unless they are part of a proper name.
+2. "tags": An array of 2 to 5 specific keyword strings (without '#' symbol) derived ONLY from the content text and metadata hints above. The file name is intentionally not provided: never guess tags from a title. Never use vague tags such as "일반", "파일", "문서", "자료", or "데이터" unless they are part of a proper name.
 3. "description": A brief 1-2 sentence summary of the content in Korean.
 
 Example JSON output format:
@@ -611,7 +620,6 @@ Example JSON output format:
         """이미지 바이트 데이터를 Base64로 인코딩하여 Vision 모델(llava)에 전달하는 함수"""
         import base64
         
-        file_name = os.path.basename(file_path)
         file_info = self._get_file_info(file_path)
 
         # 이미지를 Base64 문자열로 변환
@@ -622,8 +630,8 @@ You are an image analysis expert. Analyze the provided image and return a JSON o
 1. "display_name": A descriptive name for this image in Korean (without extension).
 2. "tags": An array of 3 to 5 relevant keyword strings in Korean (without '#' symbol).
 3. "description": A brief 1-2 sentence description/summary of what is shown in the image in Korean.
+Base every tag on what the image actually shows and on the metadata hints. The file name is intentionally not provided.
 
-Filename: {file_name}
 Metadata Hints: {file_info["content_hints"]}
 
 Example JSON output format:
