@@ -468,7 +468,7 @@ class SettingsView(QWidget):
         # JSON 파일 경로
         # ================================
         file_path = os.path.join(
-            os.getcwd(),
+            __import__('src.utils.app_paths', fromlist=['app_base_dir']).app_base_dir(),
             "assets",
             "preset.json"
         )
@@ -584,7 +584,7 @@ class SettingsView(QWidget):
     # ================================
     def load_preset(self):
         """저장된 프리셋 중 하나를 선택해서 테이블에 불러온다."""
-        file_path = os.path.join(os.getcwd(), "assets", "preset.json")
+        file_path = os.path.join(__import__('src.utils.app_paths', fromlist=['app_base_dir']).app_base_dir(), "assets", "preset.json")
         if not os.path.exists(file_path):
             QMessageBox.information(self, "프리셋 불러오기", "저장된 프리셋이 없습니다.")
             return
