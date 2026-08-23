@@ -405,3 +405,64 @@ class ClasqCore:
 class MainProcessor(ClasqCore):
     """기존 코드와의 호환성을 위한 별칭 클래스"""
     pass
+
+
+# =========================================================
+# Batch 5: recommendation 패키지가 필요로 하는 공통 상수 / 헬퍼
+# =========================================================
+
+import sqlite3 as _sqlite3
+from typing import Iterable as _Iterable, Optional as _Optional
+
+DEFAULT_EXCLUDED_DIRECTORIES = {
+    ".git", ".idea", "node_modules", ".venv", "venv", "__pycache__",
+}
+
+
+def load_registered_files(
+    db_path: str = "file_manager.db",
+    file_paths: _Optional[_Iterable[str]] = None,
+) -> List[Dict[str, Any]]:
+    """DB에 등록된 파일 행을 읽어 반환한다 (스키마 변경 없음).
+
+    file_paths 를 지정하면 해당 절대 경로에 해당하는 행만 반환한다.
+    반환 dict 키: id, file_name, file_path, ai_comment, category, tags(list[str])
+    """
+    if not os.path.exists(db_path):
+        return []
+    allowed = (
+        {os.path.normcase(os.path.abspath(p)) for p in file_paths}
+        if file_paths is not None
+        else None
+    )
+    try:
+        conn = _sqlite3.connect(db_path, timeout=10)
+        conn.text_factory = str
+        try:
+            rows = conn.execute(
+                "SELECT id, file_name, file_path, ai_comment, category, tags "
+                "FROM files ORDER BY file_name"
+            ).fetchall()
+        finally:
+            conn.close()
+    except _sqlite3.Error:
+        return []
+
+    result: List[Dict[str, Any]] = []
+    for file_id, file_name, file_path, ai_comment, category, tags_raw in rows:
+        normalized = os.path.normcase(os.path.abspath(file_path or ""))
+        if allowed is not None and normalized not in allowed:
+            continue
+        # tags 컬럼은 쉼표 구분 문자열; 비어 있으면 빈 리스트
+        tag_list: List[str] = []
+        if tags_raw:
+            tag_list = [t.lstrip("#").strip() for t in tags_raw.split(",") if t.strip()]
+        result.append({
+            "id": file_id,
+            "file_name": file_name or "",
+            "file_path": file_path or "",
+            "ai_comment": ai_comment or "",
+            "category": category or "",
+            "tags": tag_list,
+        })
+    return result
