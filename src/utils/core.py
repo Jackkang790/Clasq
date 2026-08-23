@@ -466,3 +466,211 @@ def load_registered_files(
             "tags": tag_list,
         })
     return result
+
+
+# =========================================================
+# Batch 6: 증분 분석 계획 (FolderAnalysisPlanWorker에서 사용)
+# =========================================================
+
+from collections import defaultdict as _defaultdict
+from pathlib import Path as _Path
+
+
+def _norm(path: str) -> str:
+    return os.path.normcase(os.path.abspath(os.path.normpath(path)))
+
+
+def _has_analysis(ai_comment: str, category: str) -> bool:
+    return bool((ai_comment or "").strip() or (category or "").strip())
+
+
+def scan_directory_files_flat(
+    directory: str,
+    excluded_directories: _Optional[_Iterable[str]] = None,
+) -> list:
+    """지정 디렉터리 아래 지원 파일을 재귀 탐색해 절대 경로 목록으로 반환.
+
+    ClasqCore.scan_directory_files()의 모듈 수준 버전.
+    symlink/reparse-point는 따라가지 않는다.
+    """
+    from .config import SUPPORTED_EXTENSIONS
+    root = _Path(directory).expanduser()
+    if not root.is_dir():
+        return []
+    excluded = {
+        name.casefold()
+        for name in (excluded_directories or DEFAULT_EXCLUDED_DIRECTORIES)
+    }
+    files: list[str] = []
+    for current_root, dirs, names in os.walk(
+        root, topdown=True, onerror=lambda _: None, followlinks=False
+    ):
+        kept = []
+        for d in dirs:
+            p = _Path(current_root) / d
+            try:
+                attrs = getattr(os.lstat(p), "st_file_attributes", 0)
+                if attrs & 0x400:  # reparse point (symlink/junction)
+                    continue
+            except OSError:
+                continue
+            if d.casefold() not in excluded:
+                kept.append(d)
+        dirs[:] = kept
+        for name in names:
+            if _Path(name).suffix.lower() in SUPPORTED_EXTENSIONS:
+                files.append(str((_Path(current_root) / name).resolve()))
+    return sorted(files, key=str.casefold)
+
+
+def build_incremental_analysis_plan(
+    file_paths: _Iterable[str],
+    db_path: str = "file_manager.db",
+    hash_function=None,
+) -> dict:
+    """stat 지문 기반으로 파일을 분류해 분석 계획(plan dict)을 반환한다.
+
+    반환 키:
+      scanned        - 처리 대상 절대 경로 리스트
+      already_analyzed - 변경 없고 분석 완료된 파일
+      new            - DB에 없는 신규 파일
+      changed        - 내용 변경된 파일
+      same_content   - 해시 일치 기존 분석 결과 재사용 가능한 파일
+      incomplete     - DB에 있지만 분석 미완료이며 변경 없는 파일
+      pending        - 분석이 필요한 파일 (new + changed + incomplete)
+      errors         - stat/hash 오류 파일
+      counts         - 각 카테고리 개수
+      performance    - 내부 성능 지표
+    """
+    if hash_function is None:
+        from .db_manager import FileRegistryManager
+        hash_function = FileRegistryManager.compute_file_hash
+
+    if not os.path.exists(db_path):
+        paths = [os.path.abspath(os.path.normpath(p)) for p in file_paths]
+        return {
+            "scanned": paths, "already_analyzed": [], "new": paths,
+            "changed": [], "same_content": [], "incomplete": [], "pending": paths,
+            "errors": [], "counts": {"scanned": len(paths), "new": len(paths),
+                                     "pending": len(paths)},
+            "performance": {},
+        }
+
+    conn = _sqlite3.connect(db_path, timeout=30)
+    try:
+        rows = conn.execute(
+            "SELECT file_path, file_hash, file_size, file_mtime_ns, ai_comment, category "
+            "FROM files"
+        ).fetchall()
+        try:
+            cached_rows = conn.execute(
+                "SELECT file_path, file_hash, file_size, file_mtime_ns "
+                "FROM file_fingerprint_cache"
+            ).fetchall()
+        except _sqlite3.OperationalError:
+            cached_rows = []
+    finally:
+        conn.close()
+
+    by_path: dict = {}
+    analyzed_by_hash: dict = _defaultdict(list)
+    for file_path, file_hash, file_size, file_mtime_ns, ai_comment, category in rows:
+        record = {
+            "file_path": file_path, "file_hash": file_hash or "",
+            "file_size": file_size, "file_mtime_ns": file_mtime_ns,
+            "ai_comment": ai_comment or "", "category": category or "",
+            "analyzed": _has_analysis(ai_comment, category), "source": "files",
+        }
+        by_path[_norm(file_path)] = record
+        if record["file_hash"] and record["analyzed"]:
+            analyzed_by_hash[record["file_hash"]].append(record)
+    for file_path, file_hash, file_size, file_mtime_ns in cached_rows:
+        normalized = _norm(file_path)
+        if normalized not in by_path:
+            by_path[normalized] = {
+                "file_path": file_path, "file_hash": file_hash or "",
+                "file_size": file_size, "file_mtime_ns": file_mtime_ns,
+                "ai_comment": "", "category": "", "analyzed": False, "source": "cache",
+            }
+
+    plan: dict = {
+        "scanned": [], "already_analyzed": [], "new": [], "changed": [],
+        "same_content": [], "incomplete": [], "pending": [], "errors": [],
+    }
+    perf = {
+        "stat_only_skipped": 0, "sha256_calculated": 0,
+        "hash_backfilled": 0, "changed_candidates": 0, "hash_errors": 0,
+    }
+
+    for raw_path in file_paths:
+        file_path = os.path.abspath(os.path.normpath(raw_path))
+        plan["scanned"].append(file_path)
+        try:
+            file_stat = os.stat(file_path)
+        except OSError as exc:
+            plan["errors"].append({"file_path": file_path, "error": str(exc)})
+            perf["hash_errors"] += 1
+            continue
+
+        existing = by_path.get(_norm(file_path))
+        fp_matches = bool(
+            existing and existing["file_hash"]
+            and existing["file_size"] == file_stat.st_size
+            and existing["file_mtime_ns"] == file_stat.st_mtime_ns
+        )
+        if fp_matches:
+            perf["stat_only_skipped"] += 1
+            item = {
+                "file_path": file_path, "file_hash": existing["file_hash"],
+                "file_size": file_stat.st_size, "file_mtime_ns": file_stat.st_mtime_ns,
+            }
+            if existing["analyzed"]:
+                plan["already_analyzed"].append(item)
+            else:
+                item["reason"] = "incomplete"
+                plan["incomplete"].append(item)
+                plan["pending"].append(item)
+            continue
+
+        if existing is not None:
+            perf["changed_candidates"] += 1
+        try:
+            file_hash = hash_function(file_path)
+            perf["sha256_calculated"] += 1
+        except OSError as exc:
+            plan["errors"].append({"file_path": file_path, "error": str(exc)})
+            perf["hash_errors"] += 1
+            continue
+
+        item = {
+            "file_path": file_path, "file_hash": file_hash,
+            "file_size": file_stat.st_size, "file_mtime_ns": file_stat.st_mtime_ns,
+        }
+
+        # 해시 일치 → 내용 동일한 기존 분석 결과 재사용 가능
+        if analyzed_by_hash.get(file_hash):
+            source_record = analyzed_by_hash[file_hash][0]
+            item["source_file_path"] = source_record["file_path"]
+            plan["same_content"].append(item)
+            continue
+
+        if existing is None:
+            item["reason"] = "new"
+            plan["new"].append(item)
+        else:
+            item["reason"] = "changed"
+            plan["changed"].append(item)
+        plan["pending"].append(item)
+
+    plan["counts"] = {
+        "scanned": len(plan["scanned"]),
+        "already_analyzed": len(plan["already_analyzed"]),
+        "new": len(plan["new"]),
+        "changed": len(plan["changed"]),
+        "same_content": len(plan["same_content"]),
+        "incomplete": len(plan["incomplete"]),
+        "pending": len(plan["pending"]),
+        "errors": len(plan["errors"]),
+    }
+    plan["performance"] = perf
+    return plan

@@ -118,3 +118,88 @@ class QueryParseWorker(QThread):
             self.finished.emit(result)   # ← self.taggingFinished.emit() 에서 수정 (result도 복구)
         except Exception as e:
             self.error.emit(f"자연어 파싱 처리 중 오류: {str(e)}")
+
+
+class FolderAnalysisPlanWorker(QThread):
+    """폴더 스캔 → 증분 분석 계획 수립 → 텍스트 색인 → 검색 snapshot 갱신.
+
+    AI 서버 없이 동작한다. UI 스레드를 차단하지 않는다.
+    completed signal payload keys:
+      plan       - build_incremental_analysis_plan() 결과
+      text_index - LocalTextIndexer.synchronize() 결과
+      search_snapshot - {"rows": int, "build_time_ms": float, "approximate_bytes": int}
+    """
+
+    progress = Signal(str)
+    completed = Signal(object)
+    error = Signal(str)
+
+    def __init__(
+        self,
+        folder_paths: list,
+        db_path: str = "file_manager.db",
+        file_paths: list | None = None,
+        excluded_directories=None,
+        parent=None,
+    ):
+        super().__init__(parent)
+        self.folder_paths = list(folder_paths)
+        self.db_path = db_path
+        self.file_paths = list(file_paths) if file_paths is not None else None
+        self.excluded_directories = excluded_directories
+
+    def run(self):
+        try:
+            from .core import build_incremental_analysis_plan, scan_directory_files_flat
+            from .local_text_index import LocalTextIndexer
+            from .search_snapshot import refresh_search_snapshot
+            from .db_manager import FileRegistryManager
+
+            self.progress.emit("지원 파일을 검색하고 있습니다...")
+            if self.file_paths is None:
+                files: list[str] = []
+                for folder_path in self.folder_paths:
+                    files.extend(
+                        scan_directory_files_flat(folder_path, self.excluded_directories)
+                    )
+                files = sorted(set(files), key=str.casefold)
+            else:
+                files = self.file_paths
+
+            self.progress.emit(f"{len(files):,}개 파일의 변경 여부를 확인하고 있습니다...")
+            plan = build_incremental_analysis_plan(files, self.db_path)
+
+            # 동일 내용 파일은 AI 없이 기존 분석 결과 재사용 등록
+            registry = FileRegistryManager(db_path=self.db_path)
+            reused, failed_reuse = [], []
+            for item in list(plan.get("same_content", [])):
+                result = registry.register_reused_analysis(
+                    item["file_path"], item["source_file_path"], item["file_hash"]
+                )
+                if result.get("success"):
+                    reused.append(item)
+                else:
+                    failed_item = dict(item)
+                    failed_item["reason"] = result.get("message", "reuse_failed")
+                    failed_reuse.append(failed_item)
+                    plan.setdefault("pending", []).append(failed_item)
+            plan["same_content"] = reused
+
+            self.progress.emit("문서 본문 텍스트 색인을 갱신하고 있습니다...")
+            text_indexer = LocalTextIndexer(self.db_path)
+            legacy_ppt = text_indexer.discover_legacy_ppt(self.folder_paths)
+            text_index_stats = text_indexer.synchronize([*files, *legacy_ppt])
+            plan["text_index"] = text_index_stats
+
+            # 검색 snapshot을 미리 빌드해 다음 검색이 warm-path를 타도록 함
+            self.progress.emit("검색 인덱스를 갱신하고 있습니다...")
+            search_snap = refresh_search_snapshot(self.db_path)
+            plan["search_snapshot"] = {
+                "rows": len(search_snap.records),
+                "build_time_ms": search_snap.build_time_ms,
+                "approximate_bytes": search_snap.approximate_bytes,
+            }
+            self.completed.emit(plan)
+
+        except Exception as exc:
+            self.error.emit(f"파일 분석 계획 생성 중 오류가 발생했습니다: {exc}")

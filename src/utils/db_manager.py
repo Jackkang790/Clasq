@@ -839,3 +839,92 @@ class FileRegistryManager:
         finally:
             if self._bulk_conn is None:
                 conn.close()
+
+    def register_reused_analysis(
+        self, file_path: str, source_file_path: str, expected_hash: str
+    ) -> Dict[str, Any]:
+        """동일 내용 파일의 기존 분석 결과를 재사용 등록 (AI 호출 없음).
+
+        증분 스캔에서 hash가 일치하는 기존 분석 레코드를 찾아
+        중복 격리 정책 없이 별도 파일로 등록한다.
+        """
+        result: Dict[str, Any] = {
+            "success": False,
+            "file_path": file_path,
+            "reused_from": source_file_path,
+        }
+        if not os.path.isfile(file_path):
+            result["message"] = f"파일을 찾을 수 없습니다: {file_path}"
+            return result
+
+        conn = self._get_conn()
+        owns_conn = self._bulk_conn is None
+        try:
+            actual_hash = self.compute_file_hash(file_path)
+            if actual_hash != expected_hash:
+                result["message"] = "증분 스캔 이후 파일이 변경되었습니다."
+                return result
+
+            source = conn.execute(
+                "SELECT ai_comment, category, tags, display_name "
+                "FROM files WHERE file_path = ? AND file_hash = ?",
+                (source_file_path, expected_hash),
+            ).fetchone()
+            if source is None:
+                result["message"] = "재사용 가능한 분석 레코드가 없습니다."
+                return result
+
+            ai_comment, category, tags, display_name = source
+            if not ((ai_comment or "").strip() or (category or "").strip()):
+                result["message"] = "원본 레코드에 저장된 분석 결과가 없습니다."
+                return result
+
+            now = time.strftime("%Y-%m-%d %H:%M:%S")
+            file_stat = os.stat(file_path)
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                """
+                INSERT INTO files (
+                    file_name, file_path, ai_comment, category, tags,
+                    display_name, file_hash, file_size, file_mtime_ns,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(file_path) DO UPDATE SET
+                    ai_comment    = excluded.ai_comment,
+                    category      = excluded.category,
+                    tags          = excluded.tags,
+                    display_name  = excluded.display_name,
+                    file_hash     = excluded.file_hash,
+                    file_size     = excluded.file_size,
+                    file_mtime_ns = excluded.file_mtime_ns,
+                    updated_at    = excluded.updated_at
+                """,
+                (
+                    os.path.basename(file_path), file_path,
+                    ai_comment or "", category or "", tags or "",
+                    display_name or os.path.splitext(os.path.basename(file_path))[0],
+                    actual_hash, file_stat.st_size, file_stat.st_mtime_ns,
+                    now, now,
+                ),
+            )
+            conn.execute(
+                "DELETE FROM file_fingerprint_cache WHERE file_path = ?", (file_path,)
+            )
+            conn.commit()
+            try:
+                from .search_snapshot import invalidate_search_snapshot
+                invalidate_search_snapshot(self.db_path)
+            except Exception:
+                pass
+            result["success"] = True
+            return result
+        except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            result["message"] = f"분석 결과 재사용 등록 실패: {exc}"
+            return result
+        finally:
+            if owns_conn:
+                conn.close()
