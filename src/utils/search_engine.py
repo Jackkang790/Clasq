@@ -6,6 +6,9 @@
 import sqlite3
 from typing import Dict, Any, List
 
+from .search_normalization import normalize_query_token
+from .search_aliases import build_search_alias_map, equivalent_terms
+
 
 class SearchEngine:
     """
@@ -25,21 +28,27 @@ class SearchEngine:
         "png", "jpg", "jpeg", "gif", "webp", "bmp", "tiff", "tif", "mp3", "mp4"
     }
 
-    # 2. 검색 정확도 극대화를 위한 동의어/유의어 매핑 사전 (🌟 '전쟁' 유의어 추가)
+    # 2. 검색 정확도 극대화를 위한 동의어/유의어 매핑 사전
     SYNONYM_MAP = {
         "실습": ["실습", "현장실습", "인턴", "교육"],
         "학교": ["학교", "캠퍼스", "학사"],
         "노래": ["노래", "음원", "가사", "음악", "작업"],
         "번안": ["번안", "번역", "가사"],
+        "번역": ["번역", "번역문"],
         "이미지": ["이미지", "사진", "그림", "gif", "png", "jpg"],
         "보고서": ["보고서", "리포트", "과제", "기안서"],
         "회의": ["회의", "미팅", "회의록"],
-        "전쟁": ["전쟁", "대전", "전투"]
+        "전쟁": ["전쟁", "대전", "전투"],
+        "졸업": ["졸업", "수료", "학위"],
     }
 
-    def __init__(self, db_path: str = "file_manager.db"):
+    def __init__(self, db_path: str = "file_manager.db",
+                 result_limit: int = 200,
+                 project_aliases: dict | None = None):
         """검색에 사용할 SQLite 데이터베이스 파일 경로 초기화"""
         self.db_path = db_path
+        self.result_limit = max(1, int(result_limit))
+        self.search_aliases = build_search_alias_map(project_aliases)
 
     # ---------------------------------------------------------
     # [1] 자연어 파싱 결과 분기 및 액션 제어 함수
@@ -66,10 +75,11 @@ class SearchEngine:
             for kw in raw_keywords:
                 split_keywords.extend(kw.lstrip("#").split())  # 띄어쓰기 기준으로 단어 분리
 
-            # 불용어 제거 필터링
+            # 정규화 + 불용어 제거 (조사 제거, CamelCase/구분자 처리 포함)
             filtered_keywords = [
-                kw.strip().lower() for kw in split_keywords
-                if kw.strip() and kw.strip().lower() not in self.STOP_WORDS
+                normalize_query_token(kw)
+                for kw in split_keywords
+                if normalize_query_token(kw) and normalize_query_token(kw) not in self.STOP_WORDS
             ]
 
             final_keywords = filtered_keywords if filtered_keywords else [
@@ -135,11 +145,12 @@ class SearchEngine:
 
     def _execute_sql_query(self, keywords: List[str], exts: List[str] = None,
                            date_range: Dict[str, str] | None = None, match_mode: str = "AND") -> List[tuple]:
-        """실제 SQLite LIKE SQL 문을 생성하고 실행하는 내부 함수"""
+        """실제 SQLite LIKE SQL 문을 생성하고 실행하는 내부 함수."""
         conn = sqlite3.connect(self.db_path, timeout=30)
         cursor = conn.cursor()
 
-        query = "SELECT id, file_name, file_path, ai_comment, category, tags FROM files WHERE 1=1"
+        # tags 컬럼은 DB 버전에 따라 없을 수 있으므로 제외 (UI는 *_ 언패킹으로 호환)
+        query = "SELECT id, file_name, file_path, ai_comment, category FROM files WHERE 1=1"
         params = []
 
         if keywords:
@@ -149,15 +160,19 @@ class SearchEngine:
                 if not kw.strip():
                     continue
 
-                # 동의어 사전 매핑을 통한 검색어 확장
-                synonyms = self.SYNONYM_MAP.get(kw, [kw])
+                # 동의어 사전 + 별칭 확장으로 검색어 보강
+                base_synonyms = self.SYNONYM_MAP.get(kw, [kw])
+                all_terms: list[str] = []
+                for base in base_synonyms:
+                    all_terms.extend(equivalent_terms(base, self.search_aliases))
+                synonyms = list(dict.fromkeys(all_terms))  # 중복 제거, 순서 유지
 
                 # 각 단어 또는 동의어 그룹 내에서 OR 매칭 조건 형성
                 synonym_conditions = []
                 for syn in synonyms:
                     synonym_conditions.append(
-                        "(file_name LIKE ? OR display_name LIKE ? OR ai_comment LIKE ? OR category LIKE ? OR tags LIKE ?)")
-                    params.extend([f"%{syn}%"] * 5)
+                        "(file_name LIKE ? OR ai_comment LIKE ? OR category LIKE ?)")
+                    params.extend([f"%{syn}%"] * 3)
 
                 single_kw_sql = "(" + " OR ".join(synonym_conditions) + ")"
                 keyword_group_sql.append(single_kw_sql)
@@ -178,16 +193,41 @@ class SearchEngine:
             if ext_conditions:
                 query += " AND (" + " OR ".join(ext_conditions) + ")"
 
-        if isinstance(date_range, dict) and date_range.get("start") and date_range.get("end"):
-            query += " AND date(COALESCE(file_modified_at, updated_at, created_at)) BETWEEN date(?) AND date(?)"
-            params.extend([date_range["start"], date_range["end"]])
+        # DB 스키마가 버전에 따라 다를 수 있으므로 사용 가능한 컬럼을 1회 확인
+        existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(files)").fetchall()}
 
-        query += " ORDER BY file_modified_at DESC, updated_at DESC, file_name COLLATE NOCASE"
+        if isinstance(date_range, dict) and date_range.get("start") and date_range.get("end"):
+            if "file_modified_at" in existing_cols:
+                date_col = "COALESCE(file_modified_at, updated_at, created_at)"
+            elif "file_mtime_ns" in existing_cols:
+                # file_mtime_ns는 나노초 정수이므로 날짜 비교 불가 → updated_at 사용
+                date_col = "COALESCE(updated_at, created_at)"
+            else:
+                date_col = "COALESCE(updated_at, created_at)"
+            query += f" AND date({date_col}) BETWEEN date(?) AND date(?)"
+            params.extend([date_range["start"], date_range["end"]])
+        if "file_modified_at" in existing_cols:
+            query += " ORDER BY file_modified_at DESC, updated_at DESC, file_name COLLATE NOCASE"
+        elif "file_mtime_ns" in existing_cols:
+            query += " ORDER BY file_mtime_ns DESC, updated_at DESC, file_name COLLATE NOCASE"
+        else:
+            query += " ORDER BY updated_at DESC, file_name COLLATE NOCASE"
+        query += f" LIMIT {self.result_limit}"
         cursor.execute(query, params)
         results = cursor.fetchall()
         conn.close()
 
         return results
+
+    def invalidate_snapshot(self) -> None:
+        """DB 변경 후 search_snapshot 캐시를 무효화한다 (다음 검색 시 재빌드)."""
+        from .search_snapshot import invalidate_search_snapshot
+        invalidate_search_snapshot(self.db_path)
+
+    def refresh_snapshot(self):
+        """search_snapshot 캐시를 즉시 재빌드하여 반환한다."""
+        from .search_snapshot import refresh_search_snapshot
+        return refresh_search_snapshot(self.db_path)
 
     @staticmethod
     def _date_range_label(date_range: Dict[str, str] | None) -> str:
