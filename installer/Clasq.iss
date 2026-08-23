@@ -21,7 +21,9 @@ AppPublisherURL={#AppURL}
 AppSupportURL={#AppURL}/issues
 AppUpdatesURL={#AppURL}/releases
 
-; 설치 경로 (Program Files\Clasq)
+; 64bit Windows 전용 설치 (Program Files\Clasq)
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 DefaultDirName={autopf}\{#AppName}
 DefaultGroupName={#AppName}
 
