@@ -98,6 +98,9 @@ class FileRegistryManager:
                     "file_modified_at": "TEXT",
                     "tags": "TEXT",
                     "source_path": "TEXT",
+                    # 증분 분석 변경 감지용 nanosecond mtime (AI branch 호환)
+                    # 기존 file_modified_at(TEXT 초단위)과 별개로 유지한다.
+                    "file_mtime_ns": "INTEGER",
                 },
             )
             conn.execute(
@@ -321,21 +324,19 @@ class FileRegistryManager:
             category = f"#{tags[0]}" if tags else "#일반"
             tags_str = ",".join(tags) if tags else ""
             source_path = os.path.dirname(final_path)
-            file_size = os.path.getsize(final_path)
+            stat = os.stat(final_path)
+            file_size = stat.st_size
+            file_mtime_ns = stat.st_mtime_ns
             now = time.strftime("%Y-%m-%d %H:%M:%S")
-            file_created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getctime(final_path)))
-            file_modified_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(os.path.getmtime(final_path)))
+            file_created_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_ctime))
+            file_modified_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime))
 
-            # 🌟 [개선] INSERT OR REPLACE -> UPSERT(ON CONFLICT)로 변경
-            #    기존 INSERT OR REPLACE는 내부적으로 DELETE 후 INSERT를 수행해
-            #    기존 레코드의 id가 매번 바뀌는 부작용이 있었다. ON CONFLICT
-            #    DO UPDATE는 같은 id를 유지한 채 값만 갱신하므로 향후 다른
-            #    테이블에서 file_id를 참조(FK)하게 되어도 안전하다.
             conn.execute(
                 """
                 INSERT INTO files (file_name, display_name, file_path, ai_comment, category,
-                                    file_hash, file_size, created_at, updated_at, file_created_at, file_modified_at, tags, source_path)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    file_hash, file_size, created_at, updated_at, file_created_at,
+                                    file_modified_at, tags, source_path, file_mtime_ns)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(file_path) DO UPDATE SET
                     file_name = excluded.file_name,
                     display_name = excluded.display_name,
@@ -347,10 +348,12 @@ class FileRegistryManager:
                     file_created_at = excluded.file_created_at,
                     file_modified_at = excluded.file_modified_at,
                     tags = excluded.tags,
-                    source_path = excluded.source_path
+                    source_path = excluded.source_path,
+                    file_mtime_ns = excluded.file_mtime_ns
                 """,
                 (file_name, display_name, final_path, ai_comment,
-                 category, file_hash, file_size, now, now, file_created_at, file_modified_at, tags_str, source_path),
+                 category, file_hash, file_size, now, now, file_created_at,
+                 file_modified_at, tags_str, source_path, file_mtime_ns),
             )
 
             conn.commit()

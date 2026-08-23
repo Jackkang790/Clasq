@@ -102,13 +102,16 @@ class ClasqCore:
             }
 
         extension = os.path.splitext(file_path)[1].lower()
-        media_extensions = ExtensionTagger.AUDIO_EXTENSIONS + ExtensionTagger.VIDEO_EXTENSIONS
 
-        # A. 음악·영상 파일: 내용 분석은 지원하지 않으므로 확장자 기반 기본 태그만 부착
-        if extension in media_extensions:
+        # A-1. 오디오: 내용 분석 미지원 (모든 AI 모드에서 기본 태그만 부착)
+        if extension in ExtensionTagger.AUDIO_EXTENSIONS:
             res = self.analyzer._build_fallback_response(
                 {"original_name": os.path.basename(file_path), "file_path": file_path},
-                "음성·영상 파일은 내용 분석을 지원하지 않습니다.")
+                "오디오 파일은 내용 분석을 지원하지 않습니다.")
+
+        # A-2. 영상: llama_server 모드에서 VideoAnalyzer 사용, ollama 모드에서는 오류 응답
+        elif extension in ExtensionTagger.VIDEO_EXTENSIONS:
+            res = self.analyzer.analyze_video(file_path)
 
         # B. 이미지 파일 처리
         elif self.extractor.is_image_file(file_path):
@@ -134,6 +137,13 @@ class ClasqCore:
             res["status"] = "FAILED"
             res["error"] = db_result.get("message", "분석 결과를 DB에 저장하지 못했습니다.")
         res["db_result"] = db_result
+
+        # DB 변경 후 검색 snapshot을 무효화한다 (다음 검색 시 재빌드됨).
+        # invalidate 자체는 O(1) 이므로 대량 분석 중에도 부담이 없다.
+        try:
+            self.search_engine.invalidate_snapshot()
+        except Exception:
+            pass  # snapshot 무효화 실패가 파일 저장 결과에 영향을 주지 않도록
 
         return res
 

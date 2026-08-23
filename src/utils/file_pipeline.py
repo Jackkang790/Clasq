@@ -445,21 +445,52 @@ class TextExtractor:
 
 
 # =========================================================
-# [Step 2] 로컬 AI(Ollama) 메타데이터 생성 클래스 (FileAnalyzer)
+# [Step 2] AI 메타데이터 생성 클래스 (FileAnalyzer)
+# AI_MODE=llama_server : QwenClient (src.ai 계층)
+# AI_MODE=ollama       : 기존 Ollama 경로 유지 (gemma3/llava)
 # =========================================================
 class FileAnalyzer:
-    """추출된 원문을 기반으로 로컬 LLM/Vision 모델에 요청하여 메타데이터 JSON을 만드는 클래스"""
+    """추출된 원문을 기반으로 AI에 요청하여 메타데이터 JSON을 만드는 클래스.
+
+    AI_MODE 환경변수에 따라 llama-server(QwenClient) 또는 Ollama 중 하나를 사용한다.
+    어느 경로도 실패하면 _build_fallback_response로 오류 응답을 반환한다.
+    Ollama로의 자동 fallback은 없다.
+    """
 
     def __init__(
-        self, 
-        ollama_url: str = "http://localhost:11434", 
+        self,
+        ollama_url: str = "http://localhost:11434",
         text_model: str = "gemma2:9b",
-        vision_model: str = "llava"
+        vision_model: str = "llava",
+        # AI branch 호환 파라미터 (llama_server 모드에서 직접 주입 가능)
+        client=None,
+        image_analyzer=None,
+        video_analyzer=None,
+        **_legacy_options,
     ):
-        """Ollama API URL 및 사용할 텍스트/비전 LLM 모델명 초기화"""
-        self.ollama_url = ollama_url.rstrip("/")
-        self.text_model = text_model
-        self.vision_model = vision_model
+        from src.ai.config import get_ai_mode
+        self._mode = get_ai_mode()
+
+        if self._mode != "ollama":
+            # llama_server / remote: QwenClient 사용, Ollama 호출 없음
+            from src.ai.qwen_client import QwenClient
+            from src.ai.image_analyzer import ImageAnalyzer as _ImageAnalyzer
+            from src.ai.video_analyzer import VideoAnalyzer as _VideoAnalyzer
+            self._qwen_client = client or QwenClient()
+            self.image_analyzer = image_analyzer or _ImageAnalyzer(self._qwen_client)
+            self.video_analyzer = video_analyzer or _VideoAnalyzer(self._qwen_client)
+            # 기존 로그/호환 속성 유지
+            self.text_model = self._qwen_client.config.model
+            self.vision_model = self._qwen_client.config.model
+            self.ollama_url = None
+        else:
+            # ollama 모드: 기존 경로 완전 유지
+            self._qwen_client = None
+            self.image_analyzer = None
+            self.video_analyzer = None
+            self.ollama_url = ollama_url.rstrip("/")
+            self.text_model = text_model
+            self.vision_model = vision_model
 
     def _get_file_info(self, file_path: str) -> Dict[str, Any]:
         """파일의 원본 이름, 확장자, 바이트 크기 및 분석 시각 메타데이터 구성"""
@@ -533,9 +564,13 @@ class FileAnalyzer:
     # 텍스트 기반 문서 분석 및 메타데이터 JSON 생성
     # ---------------------------------------------------------
     def analyze_document_text(self, file_path: str, extracted_text: str) -> Dict[str, Any]:
-        """문서 텍스트 원문을 로컬 텍스트 LLM에 전달하여 제목, 태그, 요약 JSON을 추출하는 함수"""
+        """문서 텍스트 원문을 AI에 전달하여 제목, 태그, 요약 JSON을 추출한다."""
         file_info = self._get_file_info(file_path)
 
+        if self._mode != "ollama":
+            return self._analyze_document_qwen(file_path, extracted_text, file_info)
+
+        # ── Ollama 경로 (기존 코드 그대로) ──────────────────────────────────
         prompt = f"""
 You are a professional file metadata analyzer. Analyze the provided text content and generate structured metadata in JSON format.
 
@@ -613,13 +648,89 @@ Example JSON output format:
         except Exception as e:
             return self._build_fallback_response(file_info, f"Text AI 분석 중 예외 발생 ({str(e)})")
 
+    def _analyze_document_qwen(
+        self, file_path: str, extracted_text: str, file_info: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """QwenClient 기반 문서 분석 (llama_server / remote 모드 전용)."""
+        prompt = f"""
+You are a professional file metadata analyzer. Analyze the provided text content and generate structured metadata in JSON format.
+
+[File Information]
+- File Extension: {file_info["file_extension"]}
+- Extracted Metadata Hints: {file_info["content_hints"]}
+- Content Text:
+{extracted_text}
+
+[Output Requirements]
+Return ONLY a valid JSON object with the following keys:
+1. "display_name": A clean, concise, and descriptive title for the file in Korean (Do NOT include file extension).
+2. "tags": An array of 2 to 5 specific keyword strings (without '#' symbol) derived ONLY from the content text and metadata hints above.
+3. "description": A brief 1-2 sentence summary of the content in Korean.
+
+Example JSON output format:
+{{
+  "display_name": "JSL 일본어 초급 교재 1권",
+  "tags": ["JSL", "일본어", "초급", "교재"],
+  "description": "JSL 일본어 초급 학습용 문법 및 단어 교재입니다."
+}}
+""".strip()
+
+        try:
+            raw = self._qwen_client.request_text(
+                prompt,
+                timeout=self._qwen_client.config.timeout,
+                max_tokens=min(400, self._qwen_client.config.max_tokens),
+                temperature=0.2,
+            )
+            parsed_json = self._qwen_client.parse_json_content(raw)
+
+            tags = self._normalize_tags(parsed_json.get("tags", []), file_info)
+            desc = parsed_json.get("description", "")
+            tags_formatted = ", ".join([f"#{t}" for t in tags]) if tags else "#일반"
+            ai_comment_str = f"태그: {tags_formatted} / 코멘트: {desc}"
+
+            return {
+                "@TYPE": "@DB",
+                "status": "SUCCESS",
+                "file_info": file_info,
+                "metadata": {
+                    "@TYPE": "@DB",
+                    "display_name": parsed_json.get(
+                        "display_name",
+                        file_info["original_name"].rsplit(".", 1)[0],
+                    ),
+                    "tags": tags,
+                    "description": desc,
+                    "ai_comment": ai_comment_str,
+                    "ocr_text": "",
+                },
+                "error": None,
+            }
+
+        except Exception as exc:
+            # Ollama 자동 fallback 없음 — 오류 응답만 반환
+            return self._build_fallback_response(file_info, f"Qwen 문서 분석 실패: {exc}")
+
     # ---------------------------------------------------------
-    # 이미지 바이너리 기반 Vision 멀티모달 분석
+    # 이미지 분석
     # ---------------------------------------------------------
     def analyze_image_bytes(self, file_path: str, img_bytes: bytes) -> Dict[str, Any]:
-        """이미지 바이트 데이터를 Base64로 인코딩하여 Vision 모델(llava)에 전달하는 함수"""
+        """이미지 분석 진입점.
+
+        AI_MODE=llama_server: img_bytes 는 안전 검사(TextExtractor)에만 사용되며,
+        실제 분석은 ImageAnalyzer 가 원본 파일 경로로 직접 읽는다. 임시 파일 없음.
+        AI_MODE=ollama: img_bytes 를 base64로 인코딩하여 llava에 전달한다.
+        """
+        if self._mode != "ollama":
+            # Qwen 경로: 원본 파일을 ImageAnalyzer가 직접 읽음 (bytes 불사용)
+            try:
+                return self.image_analyzer.analyze_image(file_path)
+            except Exception as exc:
+                file_info = self._get_file_info(file_path)
+                return self._build_fallback_response(file_info, f"Qwen 이미지 분석 실패: {exc}")
+
+        # ── Ollama 경로 (기존 코드 그대로) ──────────────────────────────────
         import base64
-        
         file_info = self._get_file_info(file_path)
 
         # 이미지를 Base64 문자열로 변환
@@ -702,7 +813,33 @@ Example JSON output format:
             return self._build_fallback_response(file_info, f"Vision AI 분석 중 예외 발생 ({str(e)})")
 
     # ---------------------------------------------------------
+    # 영상 분석 (llama_server 모드에서 VideoAnalyzer 사용)
+    # ---------------------------------------------------------
+    def analyze_video(self, file_path: str) -> Dict[str, Any]:
+        """영상 파일 분석.
+
+        AI_MODE=llama_server: VideoAnalyzer(ffmpeg + Qwen)로 대표 프레임 추출 후 분석.
+        AI_MODE=ollama: ollama는 영상 분석 미지원 → 오류 응답 반환 (Ollama 호출 없음).
+        ffmpeg 없음 / AI 실패 시에도 앱 종료 없이 오류 응답 반환.
+        """
+        file_info = self._get_file_info(file_path)
+
+        if self._mode != "ollama":
+            try:
+                return self.video_analyzer.analyze_video(file_path)
+            except Exception as exc:
+                return self._build_fallback_response(file_info, f"영상 분석 실패: {exc}")
+
+        # ollama 모드: 영상 분석 미지원
+        return self._build_fallback_response(
+            file_info,
+            "영상 분석은 AI_MODE=llama_server 에서만 지원합니다."
+        )
+
+    # ---------------------------------------------------------
     # 예외 발생 시 안전하게 기본값을 채워주는 폴백(Fallback) 함수
+    # _build_fallback_response는 다른 AI 모델로 전환하지 않는다.
+    # AI 분석 실패 시 확장자 기반 기본 태그를 부착한 오류 응답만 반환한다.
     # ---------------------------------------------------------
     def _build_fallback_response(self, file_info: Dict[str, Any], error_message: str) -> Dict[str, Any]:
         """내용 분석 실패 시 확장자 기반 기본 태그를 부착한 폴백 응답 JSON 반환"""
