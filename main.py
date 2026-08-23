@@ -1,10 +1,11 @@
 import os
 import sys
 
-from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QEventLoop
+from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QEventLoop, QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QHBoxLayout,
+    QLabel,
     QVBoxLayout,
     QMainWindow,
     QStackedWidget,
@@ -27,6 +28,10 @@ from src.ui.components.title_bar import TitleBar
 from src.ui.refresh_manager import RefreshManager
 from src.ui.widgets.progress_dialog import TaskProgressDialog
 from src.utils.workers import OllamaInitWorker
+from src.ai.config import get_ai_mode
+
+# 모듈 로드 시 1회만 읽어 캐싱 (환경변수가 실행 중 바뀌어도 앱 재시작 필요)
+_AI_MODE = get_ai_mode()
 
 # 스택 위젯 인덱스 (Sidebar.page_changed, TitleBar 설정 드롭다운 둘 다 이 순서를 따름)
 IDX_SETTINGS = 0
@@ -35,14 +40,60 @@ IDX_ORGANIZE = 2
 IDX_SAVED = 3
 
 
+# ---------------------------------------------------------------------------
+# AI 상태 배너 (llama_server / remote 모드에서만 사용)
+# ---------------------------------------------------------------------------
+
+class _AIStatusBanner(QWidget):
+    """앱 시작 시 AI 환경 준비 상태를 표시하는 슬림 배너.
+
+    준비 완료 3초 후 자동으로 숨겨진다.
+    오류 발생 시 오류 색상으로 유지된다.
+    """
+
+    _STYLE_PENDING = "background-color:#FFF3CD; border-bottom:1px solid #FFDDA1;"
+    _STYLE_READY   = "background-color:#D4EDDA; border-bottom:1px solid #C3E6CB;"
+    _STYLE_ERROR   = "background-color:#F8D7DA; border-bottom:1px solid #F5C6CB;"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(28)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 0, 12, 0)
+        layout.setSpacing(6)
+        self._label = QLabel("AI 환경 확인 중...")
+        self._label.setStyleSheet("color:#495057; font-size:12px;")
+        layout.addWidget(self._label)
+        layout.addStretch()
+        self.setStyleSheet(self._STYLE_PENDING)
+
+    def set_ready(self):
+        self._label.setText("AI 준비 완료")
+        self.setStyleSheet(self._STYLE_READY)
+        QTimer.singleShot(3000, self.hide)
+
+    def set_error(self, message: str):
+        short = message[:80] + "..." if len(message) > 80 else message
+        self._label.setText(f"AI 서버 실행 실패: {short}")
+        self.setStyleSheet(self._STYLE_ERROR)
+
+
+# ---------------------------------------------------------------------------
+# MainWindow
+# ---------------------------------------------------------------------------
+
 class MainWindow(QMainWindow):
 
-    def __init__(self):
+    def __init__(self, server_manager=None, ai_startup_error=None):
         super().__init__()
         self.setWindowTitle("AI 파일 관리 시스템")
         self.resize(1100, 700)
 
-        # 코어 시스템 초기화
+        # llama-server 인스턴스 참조 (앱 종료 시 shutdown)
+        self._server_manager = server_manager
+        self._ai_banner = None
+
+        # 코어 시스템 초기화 (Ollama/Qwen 모두 ClasqCore 공통 사용)
         self.core = ClasqCore(
             db_path=os.path.join(BASE_DIR, "file_manager.db"),
             text_model=OllamaManager.MODEL_NAME,
@@ -65,6 +116,11 @@ class MainWindow(QMainWindow):
         # ---- 상단바 ----
         self.title_bar = TitleBar()
         outer_layout.addWidget(self.title_bar)
+
+        # ---- AI 상태 배너 (llama_server / remote 모드에서만 표시) ----
+        if _AI_MODE != "ollama":
+            self._ai_banner = _AIStatusBanner()
+            outer_layout.addWidget(self._ai_banner)
 
         # ---- 사이드바 + 스택 위젯 (기존 구조 그대로) ----
         content_container = QWidget()
@@ -116,6 +172,21 @@ class MainWindow(QMainWindow):
         self._normal_geometry = None
         self._geo_anim = None
         self._opacity_anim = None
+
+        # ---- AI 배너 최종 상태 설정 ----
+        if self._ai_banner is not None:
+            if ai_startup_error:
+                self._ai_banner.set_error(ai_startup_error)
+            else:
+                self._ai_banner.set_ready()
+
+    # -----------------------------------------------------------------
+    # 앱 종료 시 llama-server 프로세스 정리
+    # -----------------------------------------------------------------
+    def closeEvent(self, event):
+        if self._server_manager is not None:
+            self._server_manager.shutdown()
+        event.accept()
 
     # -----------------------------------------------------------------
     # 내비게이션 (뒤로가기 / 앞으로가기 / 사이드바·설정 이동)
@@ -193,6 +264,10 @@ class MainWindow(QMainWindow):
         anim.start()
 
 
+# ---------------------------------------------------------------------------
+# AI 시작 함수들
+# ---------------------------------------------------------------------------
+
 def load_ollama_with_progress():
     """Ollama 모델 로딩을 worker 스레드에서 수행하며 Progress Dialog로 진행 단계를 보여줍니다."""
     dialog = TaskProgressDialog(
@@ -223,24 +298,103 @@ def load_ollama_with_progress():
     return result["success"], result["message"]
 
 
+def load_llama_with_progress():
+    """StartupWorker 를 사용한 llama-server 환경 초기화.
+
+    HW 감지 → 프로필 선택 → 저장공간 확인 → 모델 준비 → 서버 시작
+    단계별 진행을 TaskProgressDialog 로 표시한다.
+    Ollama 로의 자동 fallback 없음: 실패 시 명확한 오류 상태를 반환한다.
+    """
+    from src.ai.startup_worker import StartupWorker
+
+    dialog = TaskProgressDialog(
+        "Clasq AI 환경 준비 중",
+        "AI 실행 환경을 확인하고 있습니다...",
+        unit="단계",
+    )
+    worker = StartupWorker()
+    loop = QEventLoop()
+    result = {
+        "success": False,
+        "message": "AI 초기화 실패",
+        "done": False,
+        "server_manager": None,
+    }
+
+    def on_phase(_phase, label):
+        # 단계 진행은 indeterminate 바로 표시 (total=0)
+        dialog.update_progress(0, 0, status=label)
+
+    def on_download_progress(filename, received, total):
+        recv_gb = received / 1024 ** 3
+        tot_gb  = total   / 1024 ** 3
+        pct     = int(received / total * 100) if total else 0
+        dialog.update_progress(
+            received, total,
+            status=f"모델 다운로드 중: {filename}",
+            detail=f"{pct}%  {recv_gb:.1f}GB / {tot_gb:.1f}GB",
+        )
+
+    def on_ready(success, message):
+        result["success"] = success
+        result["done"] = True
+        result["message"] = message
+        if success:
+            result["server_manager"] = worker.server_manager
+        dialog.close()
+        loop.quit()
+
+    worker.phase_changed.connect(on_phase)
+    worker.progress_changed.connect(on_download_progress)
+    worker.ready.connect(on_ready)
+    worker.start()
+    dialog.show()
+    if not result["done"]:
+        loop.exec()
+    worker.wait()
+    return result["success"], result["message"], result["server_manager"]
+
+
+# ---------------------------------------------------------------------------
+# 진입점
+# ---------------------------------------------------------------------------
+
 def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    succeeded, error_message = load_ollama_with_progress()
-    if not succeeded:
-        QMessageBox.critical(
-            None, "Ollama 연결 실패",
-            f"{error_message}\nOllama 설치·실행 상태와 모델을 확인한 뒤 다시 시도해주세요.",
-        )
-        return 1
+    server_manager = None
+    ai_startup_error = None
+
+    if _AI_MODE == "ollama":
+        # ── 기존 Ollama 시작 경로 (코드 변경 없음) ──────────────────────────
+        succeeded, error_message = load_ollama_with_progress()
+        if not succeeded:
+            QMessageBox.critical(
+                None, "Ollama 연결 실패",
+                f"{error_message}\nOllama 설치·실행 상태와 모델을 확인한 뒤 다시 시도해주세요.",
+            )
+            return 1
+
+    else:
+        # ── llama_server / remote: StartupWorker 경로 ────────────────────────
+        # Ollama(gemma3/llava)는 호출하지 않는다.
+        succeeded, error_message, server_manager = load_llama_with_progress()
+        if not succeeded:
+            # AI 실패 → 오류를 표시하되 앱은 계속 실행 (검색·DB 기능 사용 가능)
+            # Ollama 자동 전환 없음.
+            QMessageBox.warning(
+                None, "AI 서버 시작 실패",
+                f"{error_message}\n\nAI 기능 없이 계속 실행합니다.\n(검색·파일 관리 기능은 사용 가능)",
+            )
+            ai_startup_error = error_message
 
     qss_path = os.path.join(BASE_DIR, "assets", "styles", "light.qss")
     if os.path.exists(qss_path):
         with open(qss_path, "r", encoding="utf-8") as f:
             app.setStyleSheet(f.read())
 
-    window = MainWindow()
+    window = MainWindow(server_manager=server_manager, ai_startup_error=ai_startup_error)
     window.show()
 
     return app.exec()
