@@ -670,23 +670,3 @@ class OrganizeView(QWidget):
         if self.refresh_manager:
             self.refresh_manager.refresh()
 
-    def update_tags(self, file_id: int, tags_str: str) -> bool:
-        """태그 저장 목록 화면에서 인라인 수정한 태그를 DB에 반영"""
-        tags_list = [t.strip() for t in tags_str.split(",") if t.strip()]
-        category = f"#{tags_list[0]}" if tags_list else "#일반"
-
-        conn = self._get_conn()
-        owns_conn = self._bulk_conn is None
-        try:
-            conn.execute(
-                "UPDATE files SET tags = ?, category = ? WHERE id = ?",
-                (",".join(tags_list), category, file_id),
-            )
-            conn.commit()
-            return True
-        except Exception as e:
-            print(f"[태그 업데이트 실패]: {e}")
-            return False
-        finally:
-            if owns_conn:
-                conn.close()

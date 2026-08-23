@@ -12,6 +12,7 @@
 #   3) DB 레코드와 실제 디스크 파일 상태를 맞추는 동기화 기능
 #      (외부에서 파일이 지워지거나 이동된 경우 정리)
 # =========================================================
+import logging
 import os
 import sqlite3
 import hashlib
@@ -20,6 +21,8 @@ import time
 from contextlib import contextmanager
 from typing import Dict, Any, Optional, List
 import re
+
+log = logging.getLogger(__name__)
 
 
 class FileRegistryManager:
@@ -70,49 +73,36 @@ class FileRegistryManager:
 
     # ---------------------------------------------------------
     # 1. DB 초기화 및 스키마 마이그레이션
-    #    (기존에 이미 만들어진 files.db가 있어도 안전하게 컬럼만 추가)
+    #    _init_db(): 최소 기반 구조(files + db_schema_version)만 보장
+    #    _run_migrations(): 버전별 schema 확장을 순서대로 적용
     # ---------------------------------------------------------
+
+    # 현재 최신 schema version 번호
+    _CURRENT_VERSION = 2
+
     def _init_db(self) -> None:
+        """최소 기반 구조만 생성. 실제 schema 확장은 _run_migrations()에서 처리."""
         conn = self._connect()
         try:
+            # 절대 최소: AI 분석 결과를 저장할 기본 테이블
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS files (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
                     file_name TEXT,
                     file_path TEXT UNIQUE,
                     ai_comment TEXT,
-                    category TEXT
+                    category  TEXT
                 )
                 """
             )
-            self._migrate_add_columns(
-                conn,
-                {
-                    "display_name": "TEXT",
-                    "file_hash": "TEXT",
-                    "file_size": "INTEGER",
-                    "created_at": "TEXT",
-                    "updated_at": "TEXT",
-                    "file_created_at": "TEXT",
-                    "file_modified_at": "TEXT",
-                    "tags": "TEXT",
-                    "source_path": "TEXT",
-                    # 증분 분석 변경 감지용 nanosecond mtime (AI branch 호환)
-                    # 기존 file_modified_at(TEXT 초단위)과 별개로 유지한다.
-                    "file_mtime_ns": "INTEGER",
-                },
-            )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_files_hash ON files(file_hash)")
-            
-            # 경로 관리 테이블 생성
+            # migration 인프라: schema 버전 기록 테이블
             conn.execute(
                 """
-                CREATE TABLE IF NOT EXISTS managed_paths (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    path TEXT UNIQUE,
-                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                CREATE TABLE IF NOT EXISTS db_schema_version (
+                    version    INTEGER PRIMARY KEY,
+                    applied_at TEXT    DEFAULT CURRENT_TIMESTAMP,
+                    description TEXT
                 )
                 """
             )
@@ -120,14 +110,165 @@ class FileRegistryManager:
         finally:
             conn.close()
 
-    def _migrate_add_columns(self, conn: sqlite3.Connection, columns: Dict[str, str]) -> None:
-        """기존 DB에 신규 컬럼이 없으면 ALTER TABLE로 안전하게 추가 (기존 데이터는 그대로 보존)"""
-        existing_cols = {row[1] for row in conn.execute(
-            "PRAGMA table_info(files)").fetchall()}
-        for col_name, col_type in columns.items():
-            if col_name not in existing_cols:
+        self._run_migrations()
+
+    def _run_migrations(self) -> None:
+        """db_schema_version 기준으로 미적용 migration을 순서대로 실행.
+
+        - 각 migration은 독립 트랜잭션으로 실행된다.
+        - 성공한 경우에만 version을 기록한다.
+        - 실패하면 해당 migration만 rollback하고 이후 migration도 중단한다
+          (의존 관계 보호: 이전 단계 없이 다음 단계를 적용하지 않는다).
+        """
+        conn = self._connect()
+        try:
+            current = conn.execute(
+                "SELECT COALESCE(MAX(version), 0) FROM db_schema_version"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        migrations = [
+            (1, "core tables / columns / indexes", self._migration_v1),
+            (2, "file_modified_at backfill from file_mtime_ns", self._migration_v2),
+        ]
+
+        for version, description, fn in migrations:
+            if current >= version:
+                continue
+            conn = self._connect()
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                fn(conn)
                 conn.execute(
-                    f"ALTER TABLE files ADD COLUMN {col_name} {col_type}")
+                    "INSERT INTO db_schema_version (version, description) VALUES (?, ?)",
+                    (version, description),
+                )
+                conn.commit()
+                current = version
+                log.info("DB migration v%d applied: %s", version, description)
+            except Exception as exc:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                log.error(
+                    "DB migration v%d failed (DB unchanged): %s", version, exc
+                )
+                break  # 이후 버전도 실행하지 않음
+            finally:
+                conn.close()
+
+    # ---------------------------------------------------------
+    # 1-a. Migration 구현 (각 버전은 idempotent: IF NOT EXISTS + 컬럼 존재 체크)
+    # ---------------------------------------------------------
+
+    def _migration_v1(self, conn: sqlite3.Connection) -> None:
+        """모든 테이블·컬럼·인덱스를 확보한다.
+
+        이미 존재하는 항목은 건너뛰므로 기존 DB에서도 안전하게 실행된다.
+        """
+        # ── files 추가 컬럼 ─────────────────────────────────────────────
+        self._add_columns(conn, "files", {
+            "display_name":    "TEXT",
+            "file_hash":       "TEXT",
+            "file_size":       "INTEGER",
+            "created_at":      "TEXT",
+            "updated_at":      "TEXT",
+            "file_created_at": "TEXT",
+            "file_modified_at":"TEXT",
+            "tags":            "TEXT",
+            "source_path":     "TEXT",
+            # 증분 분석 변경 감지용 nanosecond mtime
+            # file_modified_at(TEXT 초단위)과 별개로 유지한다.
+            "file_mtime_ns":   "INTEGER",
+        })
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_files_hash ON files(file_hash)"
+        )
+
+        # ── 경로 관리 테이블 ────────────────────────────────────────────
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS managed_paths (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                path       TEXT UNIQUE,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+
+        # ── 증분 분석용 파일 지문 캐시 ──────────────────────────────────
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS file_fingerprint_cache (
+                file_path     TEXT PRIMARY KEY,
+                file_hash     TEXT NOT NULL,
+                file_size     INTEGER NOT NULL,
+                file_mtime_ns INTEGER NOT NULL,
+                updated_at    TEXT
+            )
+            """
+        )
+
+        # ── 문서 텍스트 검색 인덱스 ─────────────────────────────────────
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS file_text_index (
+                file_path      TEXT PRIMARY KEY,
+                file_hash      TEXT,
+                file_size      INTEGER,
+                file_mtime_ns  INTEGER,
+                extracted_text TEXT,
+                extractor_type TEXT,
+                extract_status TEXT,
+                updated_at     TEXT
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_file_text_status "
+            "ON file_text_index(extract_status)"
+        )
+
+    def _migration_v2(self, conn: sqlite3.Connection) -> None:
+        """file_modified_at backfill: NULL 레코드에만 적용, 기존 값 절대 덮어쓰지 않음.
+
+        ON CONFLICT 없는 단순 UPDATE — 조건 자체가 덮어쓰기를 방지한다.
+        """
+        conn.execute(
+            """
+            UPDATE files
+            SET    file_modified_at = datetime(
+                       file_mtime_ns / 1000000000, 'unixepoch', 'localtime'
+                   )
+            WHERE  file_modified_at IS NULL
+              AND  file_mtime_ns    IS NOT NULL
+            """
+        )
+
+    # ---------------------------------------------------------
+    # 1-b. 내부 schema 헬퍼
+    # ---------------------------------------------------------
+
+    def _add_columns(
+        self, conn: sqlite3.Connection, table: str, columns: Dict[str, str]
+    ) -> None:
+        """지정 테이블에 없는 컬럼만 추가한다 (idempotent)."""
+        existing = {
+            row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        for col_name, col_type in columns.items():
+            if col_name not in existing:
+                conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}"
+                )
+
+    def _migrate_add_columns(
+        self, conn: sqlite3.Connection, columns: Dict[str, str]
+    ) -> None:
+        """하위 호환 래퍼 — _add_columns(conn, 'files', columns) 에 위임."""
+        self._add_columns(conn, "files", columns)
 
     # ---------------------------------------------------------
     # 2. 대량 스캔용 커넥션 재사용 세션
@@ -376,15 +517,28 @@ class FileRegistryManager:
     #    - 스키마 정의를 이 클래스 한 곳에서만 관리하도록 일원화
     # ---------------------------------------------------------
     def reset_all(self) -> None:
+        """모든 분석 데이터와 캐시를 일관되게 초기화한다.
+
+        삭제 대상: files, file_fingerprint_cache, file_text_index
+        보존 대상: managed_paths (사용자 경로 설정), db_schema_version (migration 이력)
+        """
         conn = self._get_conn()
         owns_conn = self._bulk_conn is None
         try:
             conn.execute("DELETE FROM files;")
+            conn.execute("DELETE FROM file_fingerprint_cache;")
+            conn.execute("DELETE FROM file_text_index;")
             conn.execute("DELETE FROM sqlite_sequence WHERE name='files';")
             conn.commit()
         finally:
             if owns_conn:
                 conn.close()
+        # search snapshot 무효화 (search_engine이 없을 수 있으므로 직접 호출)
+        try:
+            from .search_snapshot import invalidate_search_snapshot
+            invalidate_search_snapshot(self.db_path)
+        except Exception:
+            pass
 
     def list_files(self) -> List[Dict[str, Any]]:
         """저장 목록에서 사용할 분석 결과를 실제 디스크 상태와 함께 반환합니다."""
@@ -526,22 +680,43 @@ class FileRegistryManager:
                 conn.close()
 
     def delete_record(self, file_id: int) -> bool:
-        """
-        [DB 레코드만 삭제]
-        지정된 file_id의 files 레코드만 DELETE 한다.
-        실제 파일/폴더는 절대 건드리지 않는다(os.remove, unlink, shutil.rmtree 사용 금지).
+        """DB 레코드 삭제 + 연관 캐시 레코드 cascade 정리.
+
+        - files 레코드를 삭제한다.
+        - file_fingerprint_cache, file_text_index 의 동일 file_path 레코드를 함께 정리한다.
+        - 실제 파일/폴더는 절대 건드리지 않는다 (os.remove / unlink / shutil.rmtree 금지).
+        - 세 DELETE는 하나의 트랜잭션으로 묶인다.
         """
         conn = self._get_conn()
+        owns_conn = self._bulk_conn is None
         try:
-            cursor = conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
-            conn.commit()
-            return cursor.rowcount > 0
+            row = conn.execute(
+                "SELECT file_path FROM files WHERE id = ?", (file_id,)
+            ).fetchone()
+            if not row:
+                return False
+            file_path = row[0]
 
-        except Exception as e:
-            print(f"[DB 레코드 삭제 실패]: {e}")
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM files WHERE id = ?", (file_id,))
+            conn.execute(
+                "DELETE FROM file_fingerprint_cache WHERE file_path = ?", (file_path,)
+            )
+            conn.execute(
+                "DELETE FROM file_text_index WHERE file_path = ?", (file_path,)
+            )
+            conn.commit()
+            return True
+
+        except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            print(f"[DB 레코드 삭제 실패]: {exc}")
             return False
         finally:
-            if self._bulk_conn is None:
+            if owns_conn:
                 conn.close()
 
     def delete_file(self, file_id: int) -> bool:
@@ -566,6 +741,36 @@ class FileRegistryManager:
                 }
                 for row in rows
             ]
+        finally:
+            if owns_conn:
+                conn.close()
+
+    def get_file_by_id(self, file_id: int) -> Optional[Dict[str, Any]]:
+        """단일 파일 레코드를 id로 조회한다. 존재하지 않으면 None 반환."""
+        conn = self._get_conn()
+        owns_conn = self._bulk_conn is None
+        try:
+            row = conn.execute(
+                """SELECT id, file_name, display_name, file_path, category, tags,
+                          ai_comment, file_size, file_modified_at, file_mtime_ns
+                   FROM files WHERE id = ?""",
+                (file_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            file_name = row[1] or ""
+            return {
+                "id":               row[0],
+                "file_name":        file_name,
+                "display_name":     row[2] or (file_name.rsplit(".", 1)[0] if file_name else ""),
+                "file_path":        row[3] or "",
+                "category":         row[4] or "#일반",
+                "tags":             row[5] or "",
+                "ai_comment":       row[6] or "",
+                "file_size":        row[7] or 0,
+                "file_modified_at": row[8] or "",
+                "file_mtime_ns":    row[9],
+            }
         finally:
             if owns_conn:
                 conn.close()
