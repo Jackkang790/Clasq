@@ -13,7 +13,7 @@ from PySide6.QtCore import QSize
 from PySide6.QtWidgets import QFileDialog
 from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
-from src.utils.workers import FolderScanAndTagWorker
+from src.utils.workers import FolderScanAndTagWorker, FolderAnalysisPlanWorker
 from src.ui.widgets.progress_dialog import TaskProgressDialog
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -68,6 +68,9 @@ class SettingsView(QWidget):
         self.refresh_manager = refresh_manager
         self._tagging_worker = None
         self._tagging_dialog = None
+        self._analysis_worker = None
+        self._analysis_dialog = None
+        self._index_btn = None
         self.setObjectName("settingsView")
         self.init_layout()
         self.init_ui()
@@ -105,7 +108,8 @@ class SettingsView(QWidget):
         QPushButton#addRoot:pressed { background-color: #4A3BB1; }
 
         /* 보조 버튼 (저장, 새로고침, 초기화) */
-        QPushButton#savebtn, QPushButton#reloadbtn, QPushButton#clearbtn {
+        QPushButton#savebtn, QPushButton#reloadbtn, QPushButton#clearbtn,
+        QPushButton#indexbtn {
             padding: 8px 16px;
             border-radius: 8px;
             background-color: #FFFFFF;
@@ -115,16 +119,23 @@ class SettingsView(QWidget):
         }
         QPushButton#savebtn:hover,
         QPushButton#reloadbtn:hover,
-        QPushButton#clearbtn:hover { 
-            background-color: #F0EDFE; 
+        QPushButton#clearbtn:hover,
+        QPushButton#indexbtn:hover {
+            background-color: #F0EDFE;
             color: #6C5CE7;
             border-color: #D6CEFC;
         }
         QPushButton#savebtn:pressed,
         QPushButton#reloadbtn:pressed,
-        QPushButton#clearbtn:pressed { 
-            background-color: #E0D9FC; 
+        QPushButton#clearbtn:pressed,
+        QPushButton#indexbtn:pressed {
+            background-color: #E0D9FC;
             color: #5B4BC4;
+        }
+        QPushButton#indexbtn:disabled {
+            background-color: #F5F5F5;
+            color: #AAAAAA;
+            border-color: #EBEBEE;
         }
 
         QPushButton#backbtn { background: transparent; border: none; }
@@ -247,6 +258,11 @@ class SettingsView(QWidget):
         clearbtn.setObjectName("clearbtn")
         clearbtn.clicked.connect(self.start_tagging)
 
+        indexbtn = QPushButton('색인 갱신')
+        indexbtn.setObjectName("indexbtn")
+        indexbtn.clicked.connect(self.start_folder_analysis)
+        self._index_btn = indexbtn
+
         delRoot = QPushButton('경로삭제')
         delRoot.setObjectName("delRoot")
         delRoot.clicked.connect(self.delete_selected_paths)
@@ -282,6 +298,7 @@ class SettingsView(QWidget):
         optionlayout.addWidget(reloadbtn)
         optionlayout.addStretch()
         optionlayout.addWidget(clearbtn)
+        optionlayout.addWidget(indexbtn)
         option_main_layout.addLayout(optionlayout)
         option_main_layout.addWidget(self.preset_input_widget)
         option.setLayout(option_main_layout)
@@ -790,3 +807,94 @@ class SettingsView(QWidget):
             header.checked = False
             header.viewport().update()
         self._refresh_database_views()
+
+    # ================================
+    # 색인 갱신 (FolderAnalysisPlanWorker)
+    # ================================
+    def _get_checked_paths(self):
+        """체크박스가 선택된 행의 경로 목록을 반환한다."""
+        paths = []
+        for row in range(self.table.rowCount()):
+            widget = self.table.cellWidget(row, 0)
+            checkbox = widget.findChild(QCheckBox) if widget else None
+            path_item = self.table.item(row, 3)
+            if checkbox and checkbox.isChecked() and path_item:
+                paths.append(path_item.text().strip())
+        return paths
+
+    def start_folder_analysis(self):
+        """체크된 경로를 대상으로 증분 분석 계획 + 텍스트 색인 + 검색 snapshot 갱신을 실행한다.
+
+        파일을 이동·삭제·이름변경·덮어쓰기하지 않는다.
+        """
+        if self._analysis_worker and self._analysis_worker.isRunning():
+            QMessageBox.information(self, "색인 갱신", "이미 색인 갱신 작업이 진행 중입니다.")
+            return
+
+        paths = self._get_checked_paths()
+        if not paths:
+            QMessageBox.warning(self, "색인 갱신", "색인을 갱신할 경로를 선택해주세요.")
+            return
+
+        db_path = self.core.db_path if self.core else "file_manager.db"
+
+        if self._index_btn:
+            self._index_btn.setEnabled(False)
+
+        self._analysis_dialog = TaskProgressDialog(
+            "색인 갱신 중", "파일을 검색하고 있습니다...", parent=self, unit="파일",
+        )
+
+        self._analysis_worker = FolderAnalysisPlanWorker(paths, db_path=db_path)
+        self._analysis_worker.progress.connect(self._on_analysis_progress)
+        self._analysis_worker.completed.connect(self._on_analysis_completed)
+        self._analysis_worker.error.connect(self._on_analysis_error)
+        self._analysis_worker.start()
+        self._analysis_dialog.show()
+
+    def _on_analysis_progress(self, message):
+        if self._analysis_dialog:
+            self._analysis_dialog.setLabelText(message)
+
+    def _close_analysis_dialog(self):
+        if self._analysis_dialog:
+            self._analysis_dialog.close()
+            self._analysis_dialog = None
+        if self._index_btn:
+            self._index_btn.setEnabled(True)
+
+    def _on_analysis_completed(self, plan):
+        self._close_analysis_dialog()
+        counts = plan.get("counts", {})
+        text_idx = plan.get("text_index", {})
+        snap = plan.get("search_snapshot", {})
+
+        scanned = counts.get("scanned", 0)
+        already = counts.get("already_analyzed", 0)
+        new_files = counts.get("new", 0)
+        changed = counts.get("changed", 0)
+        pending = counts.get("pending", 0)
+        errors = counts.get("errors", 0)
+        txt_indexed = text_idx.get("indexed", 0)
+        snap_rows = snap.get("rows", 0)
+
+        msg = (
+            f"색인 갱신 완료\n\n"
+            f"스캔 파일: {scanned:,}개\n"
+            f"  · 기분석(변경 없음): {already:,}개\n"
+            f"  · 신규: {new_files:,}개\n"
+            f"  · 변경: {changed:,}개\n"
+            f"  · 분석 필요: {pending:,}개\n"
+        )
+        if errors:
+            msg += f"  · 오류: {errors:,}개\n"
+        msg += f"\n텍스트 색인 갱신: {txt_indexed:,}개\n"
+        msg += f"검색 인덱스 레코드: {snap_rows:,}개"
+
+        QMessageBox.information(self, "색인 갱신", msg)
+        self._refresh_database_views()
+
+    def _on_analysis_error(self, message):
+        self._close_analysis_dialog()
+        safe_msg = message.split("\n")[0][:200] if message else "알 수 없는 오류"
+        QMessageBox.critical(self, "색인 갱신 오류", safe_msg)
