@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+import ctypes
 
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QEventLoop, QTimer
 from PySide6.QtWidgets import (
@@ -34,6 +35,26 @@ from src.utils.app_paths import assets_dir, database_path
 from src.utils.logging_setup import initialize_runtime_logging, shutdown_runtime_logging
 
 logger = logging.getLogger(__name__)
+
+# Inno Setup uses the same per-session mutex to refuse install/uninstall while
+# Clasq still owns packaged files.  The Windows kernel releases it on process
+# exit, including abnormal exit, so no filesystem lock or stale cleanup exists.
+INSTALLER_APP_MUTEX = "Clasq-21E38F55-7A79-49A4-84E6-1F6E41F922E2"
+_installer_mutex_handle = None
+
+
+def _acquire_installer_app_mutex():
+    global _installer_mutex_handle
+    if not sys.platform.startswith("win") or _installer_mutex_handle is not None:
+        return _installer_mutex_handle
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    handle = kernel32.CreateMutexW(None, False, INSTALLER_APP_MUTEX)
+    if not handle:
+        raise OSError(ctypes.get_last_error(), "failed to create installer app mutex")
+    _installer_mutex_handle = handle
+    return handle
 
 # 모듈 로드 시 1회만 읽어 캐싱 (환경변수가 실행 중 바뀌어도 앱 재시작 필요)
 _AI_MODE = get_ai_mode()
@@ -402,6 +423,7 @@ def confirm_first_run_model_download(parent=None):
 # ---------------------------------------------------------------------------
 
 def main():
+    _acquire_installer_app_mutex()
     log_path = initialize_runtime_logging()
     logger.info(
         "application startup mode=%s platform=%s file_logging=%s",

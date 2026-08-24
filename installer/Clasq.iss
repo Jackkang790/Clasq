@@ -28,6 +28,7 @@ LicenseFile=..\LICENSE
 UninstallDisplayIcon={app}\{#MyAppExeName}
 CloseApplications=yes
 RestartApplications=no
+AppMutex=Clasq-21E38F55-7A79-49A4-84E6-1F6E41F922E2
 
 [Languages]
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
