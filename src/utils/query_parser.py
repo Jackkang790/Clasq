@@ -10,7 +10,30 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict
 
 from ollama_manager import OllamaManager
-from .config import OLLAMA_URL, TEXT_MODEL, SUPPORTED_EXTENSIONS
+from .config import (
+    OLLAMA_URL, TEXT_MODEL, SUPPORTED_EXTENSIONS, DOCUMENT_EXTENSIONS,
+    IMAGE_EXTENSIONS, VIDEO_EXTENSIONS,
+)
+
+
+_TYPE_TERMS = {
+    "pdf": (DOCUMENT_EXTENSIONS[:1], ("pdf",)),
+    "image": (IMAGE_EXTENSIONS, ("이미지", "사진", "그림")),
+    "video": (VIDEO_EXTENSIONS, ("비디오", "영상")),
+    "excel": ((".xlsx",), ("엑셀", "excel", "xlsx")),
+    "markdown": ((".md", ".markdown"), ("마크다운", "markdown", "md")),
+    "json": ((".json",), ("json",)),
+}
+_INVENTORY_PATTERNS = (
+    r"무슨\s*(?:파일|문서)(?:이|가)?\s*있", r"(?:파일|문서)\s*(?:뭐|무엇)\s*있",
+    r"어떤\s*(?:파일|문서)\s*있", r"(?:파일|문서)\s*목록\s*(?:을\s*)?(?:보여|알려)",
+    r"(?:파일|문서)\s*(?:이|가)?\s*몇\s*개", r"문서\s*종류\s*(?:가\s*)?(?:뭐|무엇|어떤)",
+)
+_COMMAND_FILLERS = {
+    "파일", "문서", "내용", "아무거나", "아무", "거나", "있어", "있니", "있나요",
+    "보여줘", "보여", "찾아줘", "찾아", "검색해줘", "검색", "알려줘", "줘",
+    "오늘", "어제", "지난주", "이번주", "금주",
+}
 
 
 class SearchQueryParser:
@@ -43,8 +66,51 @@ class SearchQueryParser:
     def parse_user_query(self, user_text: str) -> Dict[str, Any]:
         """사용자 입력 자연어를 분석하여 '@TYPE'이 포함된 JSON 객체 반환."""
         if self._mode != "ollama":
-            return self._parse_with_qwen(user_text)
-        return self._parse_with_ollama(user_text)
+            result = self._parse_with_qwen(user_text)
+        else:
+            result = self._parse_with_ollama(user_text)
+        if result.get("status") == "SUCCESS":
+            result["data"] = self._apply_intent_guards(user_text, result.get("data", {}))
+        return result
+
+    @classmethod
+    def _apply_intent_guards(cls, raw_query: str, parsed: Dict[str, Any]) -> Dict[str, Any]:
+        """명확한 파일 의도와 raw-query 근거를 LLM 결과 위에 적용한다."""
+        data = dict(parsed or {})
+        text = (raw_query or "").strip()
+        lowered = text.casefold()
+        inventory = any(re.search(pattern, text) for pattern in _INVENTORY_PATTERNS)
+
+        detected_exts: list[str] = []
+        type_terms: set[str] = set()
+        for _kind, (extensions, terms) in _TYPE_TERMS.items():
+            if any(re.search(rf"(?<![A-Za-z0-9가-힣]){re.escape(term)}(?=$|\s|[.,!?]|에서|으로|를|을|가|이)", lowered)
+                   for term in terms):
+                detected_exts.extend(extensions)
+                type_terms.update(term.casefold() for term in terms)
+
+        if inventory:
+            data.update({"@TYPE": "@검색", "intent": "inventory", "query_keywords": [],
+                         "target_extension": [], "date_range": None})
+        elif detected_exts:
+            data["@TYPE"] = "@검색"
+            data["intent"] = "search"
+            data["target_extension"] = list(dict.fromkeys(detected_exts))
+            tokens = re.findall(r"[가-힣A-Za-z0-9_]+", text)
+            keywords = []
+            for token in tokens:
+                normalized = token.casefold()
+                # 조사 결합형 type 표현(PDF에서)은 type filter로 소비한다.
+                normalized = re.sub(r"(에서|으로|를|을|가|이)$", "", normalized)
+                if normalized in type_terms or normalized in _COMMAND_FILLERS:
+                    continue
+                keywords.append(token if normalized == token.casefold() else normalized)
+            data["query_keywords"] = keywords
+
+        # raw query에 시간 표현이 없으면 모델이 만든 날짜는 신뢰하지 않는다.
+        data["date_range"] = cls._extract_date_range(text)
+        data["raw_query"] = text
+        return data
 
     # -----------------------------------------------------------------
     # llama-server / remote 경로 (QwenClient)

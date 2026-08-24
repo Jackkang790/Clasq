@@ -4,6 +4,8 @@
 # =========================================================
 import os
 import shutil
+import re
+import sqlite3
 from typing import Dict, Any, List
 
 from .file_pipeline import TextExtractor, FileAnalyzer, ExtensionTagger
@@ -57,6 +59,8 @@ class ClasqCore:
         
         # 검색 엔진 초기화
         self.search_engine = SearchEngine(db_path=db_path)
+        self._last_search_results: List[tuple] = []
+        self._selected_search_file: tuple | None = None
 
     def _normalize_path(self, path: str) -> str:
         """경로 문자열 정제 (윈도우 경로 깨짐 방어)"""
@@ -155,6 +159,32 @@ class ClasqCore:
         사용자 자연어 입력 처리
         의도 파싱 -> 검색 엔진 전달 -> 결과 반환
         """
+        text = (user_text or "").strip()
+
+        # 검색 직후의 최소 follow-up만 유지한다. 새 검색/대화가 오면 결과 상태가 갱신된다.
+        if re.fullmatch(r"(?:이거\s*)?(?:이\s*파일\s*)?(요약해줘|설명해줘|열어줘)", text):
+            target = self._selected_search_file
+            if target is None and len(self._last_search_results) == 1:
+                target = self._last_search_results[0]
+            if target is None:
+                message = ("검색 결과가 여러 개입니다. 요약할 파일을 선택해 주세요."
+                           if len(self._last_search_results) > 1 else "어떤 파일을 대상으로 할지 알려주세요.")
+                return {"action": "SHOW_CHAT", "message": message, "data": []}
+            if text.endswith("열어줘"):
+                return {"action": "OPEN_FILE", "message": target[1], "data": [target]}
+            summary = self._summary_for_search_row(target)
+            return {"action": "SHOW_CHAT", "message": summary, "data": [target],
+                    "context_file": target[2]}
+
+        # LLM이 대화로 분류하기 전에 실제 exact filename/stem 존재 여부만 안전하게 probe한다.
+        filename_rows = self.search_engine.probe_filename(text)
+        if filename_rows:
+            result = {"action": "UPDATE_TABLE", "message": f"파일명 검색 결과 {len(filename_rows)}건을 찾았습니다.",
+                      "data": filename_rows, "retrieval_path": "exact_filename_or_stem"}
+            self._last_search_results = filename_rows
+            self._selected_search_file = None
+            return result
+
         # 1단계: 자연어 의도 파싱
         parse_result = self.query_parser.parse_user_query(user_text)
         
@@ -167,7 +197,35 @@ class ClasqCore:
         parsed_data = parse_result.get("data", {})
         
         # 2단계: 검색 엔진으로 결과 처리
-        return self.search_engine.process_query_result(parsed_data)
+        result = self.search_engine.process_query_result(parsed_data)
+        if result.get("action") == "UPDATE_TABLE":
+            self._last_search_results = list(result.get("data", []))
+            self._selected_search_file = None
+        elif result.get("action") not in {"SHOW_INVENTORY"}:
+            self._last_search_results = []
+            self._selected_search_file = None
+        return result
+
+    def select_search_file(self, file_path: str) -> None:
+        self._selected_search_file = next(
+            (row for row in self._last_search_results if row[2] == file_path), None
+        )
+
+    def _summary_for_search_row(self, row: tuple) -> str:
+        file_name, file_path, ai_comment = row[1], row[2], row[3]
+        if (ai_comment or "").strip():
+            return f"{file_name}: {ai_comment.strip()}"
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        try:
+            indexed = conn.execute(
+                "SELECT extracted_text FROM file_text_index WHERE file_path=? AND extract_status='success'",
+                (file_path,),
+            ).fetchone()
+        finally:
+            conn.close()
+        text = (indexed[0] if indexed else "") or ""
+        compact = " ".join(text.split())[:800]
+        return f"{file_name}: {compact}" if compact else f"{file_name}의 요약 가능한 텍스트가 없습니다."
 
     # ---------------------------------------------------------
     # [유스케이스 3] 폴더 배치 처리

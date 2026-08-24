@@ -4,6 +4,7 @@
 # (불용어 제거, 동의어 사전 확장, 0건 방지 폴백 검색 완결판)
 # =========================================================
 import sqlite3
+import os
 from typing import Dict, Any, List
 
 from .search_normalization import normalize_query_token
@@ -62,6 +63,20 @@ class SearchEngine:
         # [Case 1] 검색 -> DB 조회 후 표 데이터 갱신 명령
         if type_val in ["search", "@검색"]:
 
+            if parsed_data.get("intent") == "inventory":
+                try:
+                    inventory = self.get_inventory()
+                except sqlite3.Error as exc:
+                    return {"action": "ERROR", "message": f"검색 DB 오류: {exc}", "data": []}
+                types = ", ".join(
+                    f"{name} {count}개" for name, count in inventory["types"].items() if count
+                ) or "등록된 유형 없음"
+                return {
+                    "action": "SHOW_INVENTORY",
+                    "message": f"등록된 파일은 총 {inventory['total']}개입니다. {types}",
+                    "data": [], "inventory": inventory, "normalized": parsed_data,
+                }
+
             condition = parsed_data.get("condition", {})
             if condition:
                 raw_keywords = condition.get("tags", [])
@@ -82,8 +97,7 @@ class SearchEngine:
                 if normalize_query_token(kw) and normalize_query_token(kw) not in self.STOP_WORDS
             ]
 
-            final_keywords = filtered_keywords if filtered_keywords else [
-                kw.strip() for kw in split_keywords if kw.strip()]
+            final_keywords = filtered_keywords
 
             # 1차: 엄격한 검색 (AND) -> 안되면 2차: 완화된 검색 (OR)
             try:
@@ -102,7 +116,9 @@ class SearchEngine:
             return {
                 "action": "UPDATE_TABLE",
                 "message": msg,
-                "data": search_results
+                "data": search_results,
+                "normalized": {**parsed_data, "query_keywords": final_keywords,
+                               "target_extension": exts, "date_range": date_range},
             }
 
         # [Case 2] @대화 -> AI 대화 응답 출력 명령
@@ -131,7 +147,7 @@ class SearchEngine:
         1차(AND 검색) 시도 후 결과가 0건이면 2차(OR 완화 검색)로 자동 전환
         :return: (검색결과 리스트, Fallback 적용 여부)
         """
-        if not keywords and not exts:
+        if not keywords:
             return self._execute_sql_query([], exts, date_range, match_mode="AND"), False
 
         # 1차 시도: 동의어 적용 AND 조건 검색
@@ -142,6 +158,42 @@ class SearchEngine:
         # 2차 시도 (Fallback): 1차에서 0건이면 OR 조건으로 완화 검색
         results_or = self._execute_sql_query(keywords, exts, date_range, match_mode="OR")
         return results_or, True
+
+    def probe_filename(self, raw_query: str) -> List[tuple]:
+        """짧은 입력이 실제 파일명/확장자 없는 stem과 일치할 때만 결과를 반환한다."""
+        candidate = (raw_query or "").strip().strip('"\'')
+        if not candidate or len(candidate) > 255 or any(ch in candidate for ch in "\r\n/\\"):
+            return []
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        try:
+            rows = conn.execute(
+                """SELECT id, file_name, file_path, ai_comment, category FROM files
+                   WHERE lower(file_name)=lower(?) LIMIT ?""",
+                (candidate, self.result_limit),
+            ).fetchall()
+            if rows:
+                return rows
+            all_rows = conn.execute(
+                "SELECT id, file_name, file_path, ai_comment, category FROM files"
+            ).fetchall()
+            return [row for row in all_rows if os.path.splitext(row[1] or "")[0].casefold() == candidate.casefold()]
+        finally:
+            conn.close()
+
+    def get_inventory(self) -> Dict[str, Any]:
+        groups = {
+            "PDF": {".pdf"}, "image": {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif"},
+            "video": {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm"},
+            "Excel": {".xlsx"}, "Markdown": {".md", ".markdown"}, "JSON": {".json"},
+        }
+        conn = sqlite3.connect(self.db_path, timeout=30)
+        try:
+            names = [row[0] or "" for row in conn.execute("SELECT file_name FROM files")]
+        finally:
+            conn.close()
+        counts = {label: sum(os.path.splitext(name)[1].casefold() in exts for name in names)
+                  for label, exts in groups.items()}
+        return {"total": len(names), "types": counts}
 
     def _execute_sql_query(self, keywords: List[str], exts: List[str] = None,
                            date_range: Dict[str, str] | None = None, match_mode: str = "AND") -> List[tuple]:
@@ -171,8 +223,10 @@ class SearchEngine:
                 synonym_conditions = []
                 for syn in synonyms:
                     synonym_conditions.append(
-                        "(file_name LIKE ? OR ai_comment LIKE ? OR category LIKE ?)")
-                    params.extend([f"%{syn}%"] * 3)
+                        "(file_name LIKE ? OR ai_comment LIKE ? OR category LIKE ? OR EXISTS ("
+                        "SELECT 1 FROM file_text_index fti WHERE fti.file_path=files.file_path "
+                        "AND fti.extract_status='success' AND fti.extracted_text LIKE ?))")
+                    params.extend([f"%{syn}%"] * 4)
 
                 single_kw_sql = "(" + " OR ".join(synonym_conditions) + ")"
                 keyword_group_sql.append(single_kw_sql)
@@ -206,12 +260,20 @@ class SearchEngine:
                 date_col = "COALESCE(updated_at, created_at)"
             query += f" AND date({date_col}) BETWEEN date(?) AND date(?)"
             params.extend([date_range["start"], date_range["end"]])
-        if "file_modified_at" in existing_cols:
-            query += " ORDER BY file_modified_at DESC, updated_at DESC, file_name COLLATE NOCASE"
-        elif "file_mtime_ns" in existing_cols:
-            query += " ORDER BY file_mtime_ns DESC, updated_at DESC, file_name COLLATE NOCASE"
+        rank_params = []
+        if keywords:
+            primary = keywords[0]
+            query += " ORDER BY CASE WHEN lower(file_name)=lower(?) THEN 0 WHEN lower(file_name) LIKE lower(?) THEN 1 ELSE 2 END,"
+            rank_params = [primary, f"{primary}.%"]
+            params.extend(rank_params)
         else:
-            query += " ORDER BY updated_at DESC, file_name COLLATE NOCASE"
+            query += " ORDER BY"
+        if "file_modified_at" in existing_cols:
+            query += " file_modified_at DESC, updated_at DESC, file_name COLLATE NOCASE"
+        elif "file_mtime_ns" in existing_cols:
+            query += " file_mtime_ns DESC, updated_at DESC, file_name COLLATE NOCASE"
+        else:
+            query += " updated_at DESC, file_name COLLATE NOCASE"
         query += f" LIMIT {self.result_limit}"
         cursor.execute(query, params)
         results = cursor.fetchall()

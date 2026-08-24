@@ -347,6 +347,11 @@ class SearchView(QWidget):
         if action == "UPDATE_TABLE":
             self.add_message(message, is_user=False)
             self._render_search_results(data)
+        elif action == "SHOW_INVENTORY":
+            self.add_message(message, is_user=False)
+        elif action == "OPEN_FILE" and data:
+            self.add_message(message, is_user=False)
+            self.open_in_explorer(data[0][2])
         elif action == "SHOW_CHAT":
             self.add_message(message, is_user=False)
         else:
@@ -384,7 +389,7 @@ class SearchView(QWidget):
                 tooltip_lines.append(f"메모: {ai_comment}")
 
             card = _FileResultCard(file_name, file_path, tooltip="\n".join(tooltip_lines))
-            card.clicked.connect(self.open_in_explorer)
+            card.clicked.connect(self._select_and_open_result)
 
             r, c = divmod(idx, COLUMNS)
             grid.addWidget(card, r, c)
@@ -394,6 +399,11 @@ class SearchView(QWidget):
 
         self.chat_layout.insertLayout(self.chat_layout.count() - 1, row_layout)
         self.scroll_to_bottom()
+
+    def _select_and_open_result(self, file_path: str):
+        if self.core is not None and hasattr(self.core, "select_search_file"):
+            self.core.select_search_file(file_path)
+        self.open_in_explorer(file_path)
 
     # -----------------------------------------------------------------
     # 임시 자연어 파서 (TODO: REQ-011 LLM 의도 파서로 교체 예정)
