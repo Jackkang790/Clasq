@@ -15,9 +15,15 @@ from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
 from src.utils.workers import FolderScanAndTagWorker, FolderAnalysisPlanWorker
 from src.ui.widgets.progress_dialog import TaskProgressDialog
+from src.utils.app_paths import assets_dir
+from src.ai.hardware_detector import HardwareDetector
+from src.utils.diagnostic_bundle import (
+    DiagnosticExportError,
+    default_bundle_filename,
+    export_diagnostic_bundle,
+)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-ASSETS_DIR = PROJECT_ROOT / "assets"
+ASSETS_DIR = Path(assets_dir())
 ICONS_DIR = ASSETS_DIR / "styles" / "icons"
 PRESET_PATH = ASSETS_DIR / "preset.json"
 
@@ -61,11 +67,12 @@ class CheckBoxHeader(QHeaderView):
 # 메인 설정 뷰
 # ================================
 class SettingsView(QWidget):
-    def __init__(self, stacked_widget, core=None, refresh_manager=None, parent=None):
+    def __init__(self, stacked_widget, core=None, refresh_manager=None, server_manager=None, parent=None):
         super().__init__(parent)
         self.stacked_widget = stacked_widget
         self.core = core
         self.refresh_manager = refresh_manager
+        self.server_manager = server_manager
         self._tagging_worker = None
         self._tagging_dialog = None
         self._analysis_worker = None
@@ -314,7 +321,53 @@ class SettingsView(QWidget):
         mainLayout.addWidget(option)
         mainLayout.addLayout(middlelayout)
         mainLayout.addWidget(tablebox, 1)
+        diagnostics_layout = QHBoxLayout()
+        diagnostics_note = QLabel("진단 로그와 비민감 시스템 정보만 로컬 ZIP으로 저장합니다.")
+        diagnostics_btn = QPushButton("진단 정보 내보내기")
+        diagnostics_btn.setObjectName("savebtn")
+        diagnostics_btn.clicked.connect(self.export_diagnostics)
+        diagnostics_layout.addWidget(diagnostics_note)
+        diagnostics_layout.addStretch()
+        diagnostics_layout.addWidget(diagnostics_btn)
+        mainLayout.addLayout(diagnostics_layout)
         self.setLayout(mainLayout)
+
+    def export_diagnostics(self):
+        answer = QMessageBox.question(
+            self,
+            "진단 정보 내보내기",
+            "진단 로그와 비민감 시스템 정보가 포함됩니다.\n"
+            "사용자 문서, 데이터베이스, 모델 원본은 포함되지 않습니다.\n\n계속하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        destination, _ = QFileDialog.getSaveFileName(
+            self,
+            "진단 정보 저장",
+            default_bundle_filename(),
+            "ZIP archive (*.zip)",
+        )
+        if not destination:
+            return
+        if not destination.lower().endswith(".zip"):
+            destination += ".zip"
+        try:
+            result = export_diagnostic_bundle(
+                destination,
+                server_manager=self.server_manager,
+                hardware_detector=HardwareDetector().detect,
+                overwrite=True,
+            )
+        except (DiagnosticExportError, OSError):
+            QMessageBox.warning(self, "진단 정보 내보내기", "진단 파일을 만들지 못했습니다.")
+            return
+        QMessageBox.information(
+            self,
+            "진단 정보 내보내기",
+            f"진단 파일을 저장했습니다.\n\n파일: {result.path.name}\nSHA-256: {result.sha256}",
+        )
 
     # ================================
     # 프리셋 입력창 표시/숨김

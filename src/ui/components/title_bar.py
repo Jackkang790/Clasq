@@ -8,11 +8,12 @@ import os
 from PySide6.QtCore import Qt, Signal, Property, QSize, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QIcon
 from PySide6.QtWidgets import QWidget, QPushButton, QHBoxLayout, QLabel, QFrame
+from src.utils.app_paths import assets_dir
 
 # 경로 설정 (src/ui/components/title_bar.py 기준)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.abspath(os.path.join(CURRENT_DIR, "..", "..", ".."))
-ICON_DIR = os.path.join(BASE_DIR, "assets", "styles", "icons")
+ICON_DIR = os.path.join(assets_dir(), "styles", "icons")
 
 PRIMARY = "#6C5CE7"
 BORDER = "#E4E6EF"

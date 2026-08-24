@@ -263,8 +263,8 @@ class ModelDownloader:
 # ---------------------------------------------------------------------------
 
 def _default_models_dir() -> Path:
-    local_appdata = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
-    return Path(local_appdata) / "Clasq" / "models"
+    from src.utils.app_paths import models_dir
+    return Path(models_dir())
 
 
 def _free_space_bytes(path: Path) -> int:

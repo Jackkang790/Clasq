@@ -150,19 +150,13 @@ class AIConfig:
     llama_model_path: str = field(
         default_factory=lambda: os.getenv(
             "LLAMA_MODEL_PATH",
-            os.path.join(
-                os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
-                "Clasq", "models", "qwen3vl-8b-q4_k_m.gguf",
-            ),
+            os.path.join(_models_dir(), "qwen3vl-8b-q4_k_m.gguf"),
         )
     )
     llama_mmproj_path: str = field(
         default_factory=lambda: os.getenv(
             "LLAMA_MMPROJ_PATH",
-            os.path.join(
-                os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
-                "Clasq", "models", "mmproj-bf16.gguf",
-            ),
+            os.path.join(_models_dir(), "mmproj-bf16.gguf"),
         )
     )
 
@@ -194,3 +188,8 @@ class AIConfig:
     @property
     def is_remote_mode(self) -> bool:
         return self.ai_mode == "remote"
+
+
+def _models_dir() -> str:
+    from src.utils.app_paths import models_dir
+    return models_dir()

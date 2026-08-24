@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import os
 import sys
+from pathlib import Path
 
 
 def _internal_dir() -> str:
@@ -66,3 +67,40 @@ def assets_dir() -> str:
     PyInstaller 6.x one-dir 번들에서는 _internal/assets/ 에 있음.
     """
     return os.path.join(_internal_dir(), "assets")
+
+
+def user_data_dir(*, create: bool = True) -> str:
+    """Return Clasq's per-user writable data directory.
+
+    Binaries and bundled resources may live in a read-only installation
+    directory.  Mutable application state therefore always belongs below
+    ``LOCALAPPDATA`` (with the user's home directory as a source-mode
+    fallback).
+    """
+    root = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    path = Path(root) / "Clasq"
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return str(path)
+
+
+def database_path() -> str:
+    return os.path.join(user_data_dir(), "file_manager.db")
+
+
+def settings_dir() -> str:
+    path = os.path.join(user_data_dir(), "settings")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def logs_dir() -> str:
+    path = os.path.join(user_data_dir(), "logs")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def models_dir() -> str:
+    path = os.path.join(user_data_dir(), "models")
+    os.makedirs(path, exist_ok=True)
+    return path

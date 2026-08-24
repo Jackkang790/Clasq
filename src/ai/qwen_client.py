@@ -3,12 +3,25 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
-from typing import Any, Dict, List, Optional, Sequence
+import time
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import requests
 
 from .config import AIConfig
+
+log = logging.getLogger(__name__)
+
+
+_runtime_recovery: Optional[Callable[[], bool]] = None
+
+
+def set_runtime_recovery(handler: Optional[Callable[[], bool]]) -> None:
+    """Register the owned server manager's bounded recovery callback."""
+    global _runtime_recovery
+    _runtime_recovery = handler
 
 
 class AIClientError(RuntimeError):
@@ -89,6 +102,7 @@ class QwenClient:
             "temperature": temperature,
             "max_tokens": max_tokens or self.config.max_tokens,
         }
+        started = time.monotonic()
         try:
             response = self.session.post(
                 self.config.chat_completions_url,
@@ -97,9 +111,30 @@ class QwenClient:
             )
             response.raise_for_status()
         except requests.exceptions.Timeout as exc:
+            log.warning("AI inference timeout timeout_seconds=%s", timeout or self.config.timeout)
             raise AITimeoutError("AI 요청 시간이 초과되었습니다.") from exc
         except requests.exceptions.ConnectionError as exc:
-            raise AIConnectionError("AI 서버에 연결할 수 없습니다.") from exc
+            # Runtime crash recovery is separate from startup profile fallback.
+            # The manager bounds restarts; this request retries exactly once.
+            log.warning("AI inference connection failure recovery_requested=%s", _runtime_recovery is not None)
+            if _runtime_recovery is not None and _runtime_recovery():
+                log.info("AI runtime recovery succeeded; retrying request once")
+                try:
+                    response = self.session.post(
+                        self.config.chat_completions_url,
+                        json=payload,
+                        timeout=timeout or self.config.timeout,
+                    )
+                    response.raise_for_status()
+                except requests.exceptions.Timeout as retry_exc:
+                    log.warning("AI inference timeout after recovery")
+                    raise AITimeoutError("AI 요청 시간이 초과되었습니다.") from retry_exc
+                except requests.exceptions.RequestException as retry_exc:
+                    log.error("AI inference retry failed after recovery")
+                    raise AIConnectionError("AI 서버 복구 후 요청에 실패했습니다.") from retry_exc
+            else:
+                log.error("AI runtime recovery unavailable or exhausted")
+                raise AIConnectionError("AI 서버에 연결할 수 없습니다.") from exc
         except requests.exceptions.HTTPError as exc:
             status = getattr(exc.response, "status_code", "unknown")
             raise AIHTTPError(f"AI 서버 HTTP 오류 ({status})") from exc
@@ -114,7 +149,12 @@ class QwenClient:
 
         if not isinstance(content, str) or not content.strip():
             raise AIResponseError("AI 응답 내용이 비어 있습니다.")
-        return content.strip()
+        content = content.strip()
+        log.info(
+            "AI inference completed latency_ms=%d response_chars=%d",
+            int((time.monotonic() - started) * 1000), len(content),
+        )
+        return content
 
     @staticmethod
     def parse_json_content(content: str) -> Dict[str, Any]:

@@ -70,6 +70,10 @@ class StartupWorker(QThread):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._server_manager = None  # 완료 후 MainWindow가 읽어감
+        self.selected_profile = None
+        self.fallback_occurred = False
+        self.attempted_profiles: list[str] = []
+        self.failure_kind: Optional[str] = None
 
     @property
     def server_manager(self):
@@ -104,14 +108,19 @@ class StartupWorker(QThread):
         # ── 2. 프로필 선택 ────────────────────────────────────────────────
         self._emit(StartupPhase.PROFILE_SELECT)
         sel = ProfileSelector()
-        profile = sel.select(hw)
+        profiles = sel.select_candidates(hw)
 
-        if profile is None:
+        if not profiles:
             log.warning("프로필 없음: %s", sel.reason)
             self.ready.emit(False, sel.reason)
             return
 
-        log.info("프로필: %s", profile.name)
+        profile = profiles[0]
+        log.info(
+            "AI profile selected primary=%s candidates=%s gpu_model=%s total_vram_mb=%d free_vram_mb=%d",
+            profile.name, ",".join(item.name for item in profiles), hw.gpu_name,
+            hw.gpu_vram_mb, hw.gpu_vram_free_mb,
+        )
 
         # ── 3. 저장공간 확인 ──────────────────────────────────────────────
         self._emit(StartupPhase.STORAGE_CHECK)
@@ -164,20 +173,39 @@ class StartupWorker(QThread):
             self.ready.emit(False, msg)
             return
 
-        # ── 5. llama-server 시작 + readiness ──────────────────────────────
-        self._emit(StartupPhase.SERVER_START)
-        self._server_manager = LlamaServerManager(cfg, profile=profile)
+        # ── 5. llama-server 시작 + readiness + inference ─────────────────
+        last_error = "AI 서버 시작 실패"
+        for index, candidate in enumerate(profiles):
+            self.attempted_profiles.append(candidate.name)
+            self._emit(StartupPhase.SERVER_START, candidate.name)
+            manager = LlamaServerManager(cfg, profile=candidate)
+            # Preserve the exact snapshot used for profile selection so
+            # diagnostics do not depend on a second, possibly transient query.
+            manager.hardware_info = hw
+            self._server_manager = manager
 
-        # 이미 실행 중인지 먼저 확인
-        if not self._server_manager.is_running():
-            self._emit(StartupPhase.MODEL_LOADING, "최대 2분 소요될 수 있습니다")
+            if not manager.is_running():
+                self._emit(StartupPhase.MODEL_LOADING, "최대 2분 소요될 수 있습니다")
 
-        server_ok = self._server_manager.ensure_running()
+            if manager.ensure_running() and manager.smoke_inference():
+                self.selected_profile = candidate
+                self.fallback_occurred = index > 0
+                self.failure_kind = None
+                self._emit(StartupPhase.READY)
+                log.info("AI startup ready profile=%s fallback=%s", candidate.name, index > 0)
+                self.ready.emit(True, "")
+                return
 
-        if server_ok:
-            self._emit(StartupPhase.READY)
-            self.ready.emit(True, "")
-        else:
-            msg = self._server_manager.error or "AI 서버 시작 실패"
-            log.error(msg)
-            self.ready.emit(False, msg)
+            last_error = manager.error or last_error
+            self.failure_kind = manager.failure_kind
+            log.warning(
+                "AI profile attempt failed profile=%s kind=%s fallback_remaining=%d",
+                candidate.name, manager.failure_kind, len(profiles) - index - 1,
+            )
+            manager.shutdown()
+            # Artifact/config errors are not VRAM fallback candidates.
+            if manager.failure_kind in {"model_missing", "ram_oom"}:
+                break
+
+        log.error(last_error)
+        self.ready.emit(False, last_error)

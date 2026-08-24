@@ -78,7 +78,7 @@ class FileRegistryManager:
     # ---------------------------------------------------------
 
     # 현재 최신 schema version 번호
-    _CURRENT_VERSION = 2
+    _CURRENT_VERSION = 3
 
     def _init_db(self) -> None:
         """최소 기반 구조만 생성. 실제 schema 확장은 _run_migrations()에서 처리."""
@@ -131,6 +131,7 @@ class FileRegistryManager:
         migrations = [
             (1, "core tables / columns / indexes", self._migration_v1),
             (2, "file_modified_at backfill from file_mtime_ns", self._migration_v2),
+            (3, "organize_history table for Undo/History", self._migration_v3),
         ]
 
         for version, description, fn in migrations:
@@ -229,6 +230,36 @@ class FileRegistryManager:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_file_text_status "
             "ON file_text_index(extract_status)"
+        )
+
+    def _migration_v3(self, conn: sqlite3.Connection) -> None:
+        """organize_history: 파일 정리 이력 + Undo 지원 (schema v3).
+
+        한 번의 Apply 승인을 operation_id(UUID)로 묶어 저장한다.
+        migration은 idempotent (IF NOT EXISTS).
+        """
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS organize_history (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                operation_id  TEXT    NOT NULL,
+                original_path TEXT    NOT NULL,
+                moved_path    TEXT    NOT NULL,
+                file_hash     TEXT,
+                file_size     INTEGER,
+                status        TEXT    NOT NULL DEFAULT 'applied',
+                applied_at    TEXT    NOT NULL,
+                undone_at     TEXT
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_org_hist_op "
+            "ON organize_history(operation_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_org_hist_status "
+            "ON organize_history(status, applied_at)"
         )
 
     def _migration_v2(self, conn: sqlite3.Connection) -> None:
@@ -495,6 +526,22 @@ class FileRegistryManager:
                 (file_name, display_name, final_path, ai_comment,
                  category, file_hash, file_size, now, now, file_created_at,
                  file_modified_at, tags_str, source_path, file_mtime_ns),
+            )
+
+            # 실제 AI 분석 직후에도 증분 fingerprint cache를 준비한다.
+            # Apply/Undo는 이 행의 path만 갱신하며 hash를 다시 계산하지 않는다.
+            conn.execute(
+                """
+                INSERT INTO file_fingerprint_cache
+                    (file_path, file_hash, file_size, file_mtime_ns, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(file_path) DO UPDATE SET
+                    file_hash     = excluded.file_hash,
+                    file_size     = excluded.file_size,
+                    file_mtime_ns = excluded.file_mtime_ns,
+                    updated_at    = excluded.updated_at
+                """,
+                (final_path, file_hash, file_size, file_mtime_ns, now),
             )
 
             conn.commit()

@@ -1,5 +1,6 @@
 import os
 import sys
+import logging
 
 from PySide6.QtCore import Qt, QPropertyAnimation, QEasingCurve, QEventLoop, QTimer
 from PySide6.QtWidgets import (
@@ -29,6 +30,10 @@ from src.ui.refresh_manager import RefreshManager
 from src.ui.widgets.progress_dialog import TaskProgressDialog
 from src.utils.workers import OllamaInitWorker
 from src.ai.config import get_ai_mode
+from src.utils.app_paths import assets_dir, database_path
+from src.utils.logging_setup import initialize_runtime_logging, shutdown_runtime_logging
+
+logger = logging.getLogger(__name__)
 
 # 모듈 로드 시 1회만 읽어 캐싱 (환경변수가 실행 중 바뀌어도 앱 재시작 필요)
 _AI_MODE = get_ai_mode()
@@ -91,11 +96,12 @@ class MainWindow(QMainWindow):
 
         # llama-server 인스턴스 참조 (앱 종료 시 shutdown)
         self._server_manager = server_manager
+        self._app_shutting_down = False
         self._ai_banner = None
 
         # 코어 시스템 초기화 (Ollama/Qwen 모두 ClasqCore 공통 사용)
         self.core = ClasqCore(
-            db_path=os.path.join(BASE_DIR, "file_manager.db"),
+            db_path=database_path(),
             text_model=OllamaManager.MODEL_NAME,
         )
         self.refresh_manager = RefreshManager(self)
@@ -136,7 +142,12 @@ class MainWindow(QMainWindow):
         # Index 1: 검색
         # Index 2: 정리
         # Index 3: 저장목록
-        self.settings_view = SettingsView(self.stacked_widget, core=self.core, refresh_manager=self.refresh_manager)
+        self.settings_view = SettingsView(
+            self.stacked_widget,
+            core=self.core,
+            refresh_manager=self.refresh_manager,
+            server_manager=self._server_manager,
+        )
         self.search_view = SearchView(core=self.core, refresh_manager=self.refresh_manager)
         self.organize_view = OrganizeView(core=self.core, refresh_manager=self.refresh_manager)
         self.saved_view = SavedView(core=self.core, refresh_manager=self.refresh_manager)
@@ -184,8 +195,11 @@ class MainWindow(QMainWindow):
     # 앱 종료 시 llama-server 프로세스 정리
     # -----------------------------------------------------------------
     def closeEvent(self, event):
+        logger.info("application shutdown requested")
+        self._app_shutting_down = True
         if self._server_manager is not None:
             self._server_manager.shutdown()
+        logger.info("application window closed server_cleanup=%s", self._server_manager is not None)
         event.accept()
 
     # -----------------------------------------------------------------
@@ -360,6 +374,13 @@ def load_llama_with_progress():
 # ---------------------------------------------------------------------------
 
 def main():
+    log_path = initialize_runtime_logging()
+    logger.info(
+        "application startup mode=%s platform=%s file_logging=%s",
+        "packaged" if getattr(sys, "frozen", False) else "source",
+        sys.platform,
+        log_path is not None,
+    )
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
@@ -380,6 +401,9 @@ def main():
         # ── llama_server / remote: StartupWorker 경로 ────────────────────────
         # Ollama(gemma3/llava)는 호출하지 않는다.
         succeeded, error_message, server_manager = load_llama_with_progress()
+        if server_manager is not None:
+            from src.ai.qwen_client import set_runtime_recovery
+            set_runtime_recovery(server_manager.recover_if_needed)
         if not succeeded:
             # AI 실패 → 오류를 표시하되 앱은 계속 실행 (검색·DB 기능 사용 가능)
             # Ollama 자동 전환 없음.
@@ -389,7 +413,7 @@ def main():
             )
             ai_startup_error = error_message
 
-    qss_path = os.path.join(BASE_DIR, "assets", "styles", "light.qss")
+    qss_path = os.path.join(assets_dir(), "styles", "light.qss")
     if os.path.exists(qss_path):
         with open(qss_path, "r", encoding="utf-8") as f:
             app.setStyleSheet(f.read())
@@ -397,7 +421,14 @@ def main():
     window = MainWindow(server_manager=server_manager, ai_startup_error=ai_startup_error)
     window.show()
 
-    return app.exec()
+    try:
+        return app.exec()
+    except Exception:
+        logger.exception("unexpected application event-loop failure")
+        raise
+    finally:
+        logger.info("application exiting")
+        shutdown_runtime_logging()
 
 
 if __name__ == "__main__":

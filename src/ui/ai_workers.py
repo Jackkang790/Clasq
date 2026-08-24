@@ -96,7 +96,10 @@ class AIFileWorker(QThread):
             else:
                 raise ValueError(f"지원하지 않는 AI 작업입니다: {self.operation}")
             self.succeeded.emit(result)
-        except (AIConnectionError, AITimeoutError) as exc:
+        except AITimeoutError as exc:
+            logger.warning("AI 응답 시간 초과: %s", exc)
+            self.failed.emit("로컬 AI 응답 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.")
+        except AIConnectionError as exc:
             logger.warning("AI 연결 실패: %s", exc)
             self.failed.emit(f"AI 서버에 연결할 수 없습니다: {exc}")
         except AIResponseError as exc:
