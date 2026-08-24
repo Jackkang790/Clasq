@@ -101,6 +101,10 @@ def logs_dir() -> str:
 
 
 def models_dir() -> str:
+    override = os.environ.get("CLASQ_MODEL_CACHE_DIR", "").strip()
+    if override:
+        os.makedirs(override, exist_ok=True)
+        return override
     path = os.path.join(user_data_dir(), "models")
     os.makedirs(path, exist_ok=True)
     return path

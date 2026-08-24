@@ -74,6 +74,12 @@ class StartupWorker(QThread):
         self.fallback_occurred = False
         self.attempted_profiles: list[str] = []
         self.failure_kind: Optional[str] = None
+        self._downloader = None
+
+    def cancel(self) -> None:
+        self.requestInterruption()
+        if self._downloader is not None:
+            self._downloader.cancel()
 
     @property
     def server_manager(self):
@@ -93,7 +99,7 @@ class StartupWorker(QThread):
     def run(self) -> None:
         from src.ai.config import AIConfig
         from src.ai.hardware_detector import HardwareDetector
-        from src.ai.model_downloader import ModelDownloader, _free_space_bytes
+        from src.ai.model_downloader import ModelDownloader
         from src.ai.runtime_profile import ProfileSelector
         from src.ai.server_manager import LlamaServerManager
 
@@ -127,16 +133,8 @@ class StartupWorker(QThread):
         models_dir = Path(cfg.llama_model_path).parent
         models_dir.mkdir(parents=True, exist_ok=True)
 
-        free = _free_space_bytes(models_dir)
-        needed = profile.model_size_bytes + profile.mmproj_size_bytes + 512 * 1024 * 1024
-        if free < needed:
-            msg = (
-                f"저장공간이 부족합니다. "
-                f"필요: {needed / 1024**3:.1f}GB  여유: {free / 1024**3:.1f}GB"
-            )
-            log.warning(msg)
-            self.ready.emit(False, msg)
-            return
+        # Space is checked per missing artifact by ModelDownloader.  A fully
+        # validated cache must remain usable even when free disk space is low.
 
         # ── 4. 모델 파일 확인 / 다운로드 / 검증 ──────────────────────────
         self._emit(StartupPhase.MODEL_CHECK)
@@ -165,8 +163,12 @@ class StartupWorker(QThread):
             on_progress=_on_dl_progress,
             on_status=_on_dl_status,
         )
+        self._downloader = downloader
         model_ok = downloader.ensure_ready()
 
+        if self.isInterruptionRequested():
+            self.ready.emit(False, "모델 준비가 취소되었습니다.")
+            return
         if not model_ok:
             msg = downloader.error or "모델 파일 준비 실패"
             log.error(msg)

@@ -6,8 +6,8 @@ from PySide6.QtWidgets import QProgressDialog
 class TaskProgressDialog(QProgressDialog):
     """제목 / 상태 문구 / Progress Bar / 진행 상황을 함께 표시하는 모달 다이얼로그."""
 
-    def __init__(self, title, status_text, parent=None, unit="파일"):
-        super().__init__(status_text, None, 0, 0, parent)
+    def __init__(self, title, status_text, parent=None, unit="파일", cancellable=False):
+        super().__init__(status_text, "취소" if cancellable else None, 0, 0, parent)
         self._status_text = status_text
         self._unit = unit
         self.setWindowTitle(title)
@@ -15,7 +15,8 @@ class TaskProgressDialog(QProgressDialog):
         self.setMinimumDuration(0)
         self.setAutoClose(False)
         self.setAutoReset(False)
-        self.setCancelButton(None)
+        if not cancellable:
+            self.setCancelButton(None)
         self.setMinimumWidth(380)
         self.setLabelText(status_text)
 

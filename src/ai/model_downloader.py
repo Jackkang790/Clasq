@@ -24,10 +24,11 @@ import json
 import logging
 import os
 import shutil
-import time
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
+from urllib.parse import urlsplit
 
 import requests
 
@@ -41,6 +42,12 @@ ProgressCallback = Callable[[str, int, int], None]
 _CHUNK_SIZE      = 1024 * 1024   # 1 MB
 _CONNECT_TIMEOUT = 15
 _READ_TIMEOUT    = 60
+_MAX_ATTEMPTS = 3
+_RETRYABLE_STATUS = {408, 429, 500, 502, 503, 504}
+
+
+class DownloadCancelled(Exception):
+    pass
 
 
 class ModelDownloader:
@@ -52,13 +59,40 @@ class ModelDownloader:
         models_dir: Optional[Path] = None,
         on_progress: Optional[ProgressCallback] = None,
         on_status: Optional[Callable[[str], None]] = None,
+        request_get=None,
+        cancel_event=None,
+        max_attempts: int = _MAX_ATTEMPTS,
     ):
         self._profile = profile
         self._models_dir = Path(models_dir) if models_dir else _default_models_dir()
         self._on_progress = on_progress
         self._on_status = on_status
+        self._request_get = request_get or requests.get
+        self._cancel_event = cancel_event or threading.Event()
+        self._max_attempts = max(1, int(max_attempts))
         self._manifest_path = self._models_dir / ".clasq_manifest.json"
         self.error: Optional[str] = None
+
+    def cancel(self) -> None:
+        self._cancel_event.set()
+
+    def cache_state(self) -> dict[str, str]:
+        state = {}
+        for role, filename, expected_sha256, expected_size in (
+            ("main", self._profile.model_filename, self._profile.model_sha256, self._profile.model_size_bytes),
+            ("mmproj", self._profile.mmproj_filename, self._profile.mmproj_sha256, self._profile.mmproj_size_bytes),
+        ):
+            path = self._models_dir / filename
+            if not path.exists():
+                value = "missing"
+            elif path.stat().st_size != expected_size:
+                value = "invalid_size"
+            elif self._is_valid_cached(path, expected_sha256, expected_size):
+                value = "valid"
+            else:
+                value = "needs_validation"
+            state[role] = value
+        return state
 
     # ── 공개 API ────────────────────────────────────────────────────────
 
@@ -68,7 +102,11 @@ class ModelDownloader:
         항상 bool 을 반환한다. 예외를 던지지 않는다.
         """
         self.error = None
-        self._models_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self._models_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            self.error = "모델 캐시 폴더를 준비하지 못했습니다."
+            return False
 
         files = [
             (self._profile.model_filename,  self._profile.model_sha256,  self._profile.model_size_bytes,  self._profile.model_url),
@@ -100,8 +138,17 @@ class ModelDownloader:
         expected_size: int,
         url: str,
     ) -> bool:
+        allowed = {self._profile.model_filename, self._profile.mmproj_filename}
+        if Path(filename).name != filename or filename not in allowed:
+            self.error = "허용되지 않은 모델 파일 이름입니다."
+            return False
         target = self._models_dir / filename
         self._emit_status(f"{filename} 확인 중...")
+
+        if target.exists() and target.stat().st_size != expected_size:
+            log.warning("%s: invalid cached file size; downloading again", self._role(filename))
+            target.unlink(missing_ok=True)
+            self._remove_manifest(filename)
 
         if target.exists():
             if self._is_valid_cached(target, expected_sha256, expected_size):
@@ -140,57 +187,86 @@ class ModelDownloader:
         expected_size: int,
         target: Path,
     ) -> bool:
-        tmp_path = target.with_suffix(".tmp")
-        tmp_path.unlink(missing_ok=True)
-
-        log.info("%s: 다운로드 시작 (%s)", filename, url)
-        self._emit_status(f"{filename} 다운로드 중...")
-
+        lock_path = target.with_name(target.name + ".download.lock")
         try:
-            resp = requests.get(
-                url,
-                stream=True,
-                timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
-            )
-            resp.raise_for_status()
-
-            total = int(resp.headers.get("content-length", expected_size))
-            received = 0
-            sha = hashlib.sha256()
-
-            with open(tmp_path, "wb") as f:
-                for chunk in resp.iter_content(chunk_size=_CHUNK_SIZE):
-                    if not chunk:
-                        continue
-                    f.write(chunk)
-                    sha.update(chunk)
-                    received += len(chunk)
-                    if self._on_progress:
-                        self._on_progress(filename, received, total)
-
-        except requests.RequestException as exc:
-            self.error = f"{filename} 다운로드 실패: {exc}"
-            log.error(self.error)
-            tmp_path.unlink(missing_ok=True)
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+        except FileExistsError:
+            self.error = f"{self._role(filename)} 모델 다운로드가 이미 진행 중입니다."
             return False
+        try:
+            return self._download_locked(filename, url, expected_sha256, expected_size, target)
+        finally:
+            lock_path.unlink(missing_ok=True)
 
-        # SHA-256 검증 (다운로드 직후 — 항상)
-        actual = sha.hexdigest()
-        if actual != expected_sha256.lower():
-            self.error = (
-                f"{filename} SHA-256 불일치.\n"
-                f"  예상: {expected_sha256}\n"
-                f"  실제: {actual}"
-            )
-            log.error(self.error)
-            tmp_path.unlink(missing_ok=True)
+    def _download_locked(self, filename, url, expected_sha256, expected_size, target) -> bool:
+        tmp_path = target.with_name(target.name + ".part")
+        self._cleanup_partial(tmp_path)
+        role = self._role(filename)
+        if not _is_https_url(url):
+            self.error = f"{role} 모델 다운로드는 HTTPS만 허용됩니다."
             return False
+        log.info("model download started role=%s expected_bytes=%d", role, expected_size)
+        self._emit_status(f"{filename} 다운로드 중...")
+        for attempt in range(1, self._max_attempts + 1):
+            if self._cancel_event.is_set():
+                self.error = "모델 다운로드가 취소되었습니다."
+                self._cleanup_partial(tmp_path)
+                return False
+            try:
+                response = self._request_get(url, stream=True, timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
+                response.raise_for_status()
+                if not _is_https_url(getattr(response, "url", url)):
+                    raise ValueError("insecure redirect")
+                received = 0
+                sha = hashlib.sha256()
+                total = int(response.headers.get("content-length", expected_size))
+                with open(tmp_path, "wb") as output:
+                    for chunk in response.iter_content(chunk_size=_CHUNK_SIZE):
+                        if self._cancel_event.is_set():
+                            raise DownloadCancelled
+                        if not chunk:
+                            continue
+                        output.write(chunk)
+                        sha.update(chunk)
+                        received += len(chunk)
+                        if self._on_progress:
+                            self._on_progress(filename, received, total)
+                if received != expected_size:
+                    raise ValueError("size mismatch")
+                if sha.hexdigest() != expected_sha256.lower():
+                    raise ValueError("hash mismatch")
+                os.replace(tmp_path, target)
+                self._save_manifest(filename, target, expected_sha256)
+                log.info("model download validated role=%s bytes=%d", role, received)
+                return True
+            except DownloadCancelled:
+                self.error = "모델 다운로드가 취소되었습니다."
+                self._cleanup_partial(tmp_path)
+                return False
+            except requests.HTTPError as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                retry = status in _RETRYABLE_STATUS and attempt < self._max_attempts
+                self._cleanup_partial(tmp_path)
+                if not retry:
+                    self.error = f"{role} 모델 다운로드에 실패했습니다 (HTTP 오류)."
+                    return False
+            except (requests.RequestException, OSError, ValueError):
+                self._cleanup_partial(tmp_path)
+                if attempt >= self._max_attempts:
+                    self.error = f"{role} 모델 다운로드 또는 검증에 실패했습니다."
+                    return False
+        return False
 
-        # 원자적 이동
-        shutil.move(str(tmp_path), str(target))
-        self._save_manifest(filename, target, expected_sha256)
-        log.info("%s: 다운로드 및 검증 완료", filename)
-        return True
+    def _role(self, filename: str) -> str:
+        return "main" if filename == self._profile.model_filename else "mmproj"
+
+    @staticmethod
+    def _cleanup_partial(path: Path) -> None:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     # ── SHA-256 / manifest ──────────────────────────────────────────────
 
@@ -272,3 +348,10 @@ def _free_space_bytes(path: Path) -> int:
         return shutil.disk_usage(path).free
     except Exception:
         return 0
+
+
+def _is_https_url(url: str) -> bool:
+    try:
+        return urlsplit(url).scheme.lower() == "https"
+    except Exception:
+        return False

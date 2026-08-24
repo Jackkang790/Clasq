@@ -325,6 +325,7 @@ def load_llama_with_progress():
         "Clasq AI 환경 준비 중",
         "AI 실행 환경을 확인하고 있습니다...",
         unit="단계",
+        cancellable=True,
     )
     worker = StartupWorker()
     loop = QEventLoop()
@@ -361,12 +362,39 @@ def load_llama_with_progress():
     worker.phase_changed.connect(on_phase)
     worker.progress_changed.connect(on_download_progress)
     worker.ready.connect(on_ready)
+    dialog.canceled.connect(worker.cancel)
     worker.start()
     dialog.show()
     if not result["done"]:
         loop.exec()
     worker.wait()
     return result["success"], result["message"], result["server_manager"]
+
+
+def confirm_first_run_model_download(parent=None):
+    """Ask before provisioning the large local model on an empty cache."""
+    from src.ai.model_downloader import ModelDownloader
+    from src.ai.runtime_profile import PROFILE_QWEN3VL_8B_Q4KM_CUDA
+    from src.utils.app_paths import models_dir
+
+    state = ModelDownloader(
+        PROFILE_QWEN3VL_8B_Q4KM_CUDA,
+        models_dir=models_dir(),
+    ).cache_state()
+    if state and all(value == "valid" for value in state.values()):
+        return True
+    message = (
+        "로컬 AI 기능을 사용하려면 약 6.2GB의 모델 파일을 다운로드해야 합니다.\n\n"
+        "인터넷 연결이 필요하며, 다운로드 완료 후 모델은 이 PC에서 로컬로 사용됩니다.\n"
+        "지금 다운로드하시겠습니까?"
+    )
+    return QMessageBox.question(
+        parent,
+        "로컬 AI 모델 준비",
+        message,
+        QMessageBox.Yes | QMessageBox.No,
+        QMessageBox.No,
+    ) == QMessageBox.Yes
 
 
 # ---------------------------------------------------------------------------
@@ -400,7 +428,11 @@ def main():
     else:
         # ── llama_server / remote: StartupWorker 경로 ────────────────────────
         # Ollama(gemma3/llava)는 호출하지 않는다.
-        succeeded, error_message, server_manager = load_llama_with_progress()
+        if confirm_first_run_model_download():
+            succeeded, error_message, server_manager = load_llama_with_progress()
+        else:
+            succeeded = False
+            error_message = "모델 다운로드는 나중에 진행할 수 있습니다."
         if server_manager is not None:
             from src.ai.qwen_client import set_runtime_recovery
             set_runtime_recovery(server_manager.recover_if_needed)
