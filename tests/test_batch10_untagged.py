@@ -247,13 +247,13 @@ class TestBatch10AIAvailability(unittest.TestCase):
             result = OrganizeView._check_ai_available()
         self.assertTrue(result)
 
-    def test_ai_unavailable_does_not_crash_app(self):
-        """AI 서버가 없어도 앱이 정상 동작해야 한다 (소스 확인)."""
+    def test_organize_does_not_depend_on_ai_server(self):
+        """정리 적용은 AI 서버 상태와 무관하게 태그된 파일만 처리한다."""
         from src.ui.views.organize_view import OrganizeView
-        # _on_organize_confirmed에서 AI 미응답 분기가 있어야 함
         src = inspect.getsource(OrganizeView._on_organize_confirmed)
-        self.assertIn("_check_ai_available", src)
-        self.assertIn("AI 서버", src)
+        self.assertNotIn("_check_ai_available", src)
+        self.assertNotIn("_start_untagged_analysis", src)
+        self.assertIn("get_files_for_organize", src)
 
 
 # ── 5. background AI 분석 ────────────────────────────────────────────────────
@@ -371,11 +371,13 @@ class TestBatch10NoSilentDrop(unittest.TestCase):
         src = inspect.getsource(OrganizeView._on_plan_completed)
         self.assertIn("len(untagged)", src)
 
-    def test_ai_unavailable_message_shown(self):
-        """AI 사용 불가 시 사용자에게 안내 메시지가 있어야 한다."""
+    def test_untagged_files_are_directed_to_saved_list(self):
+        """미태깅 파일은 자동 분석하지 않고 저장목록 설정을 안내해야 한다."""
         from src.ui.views.organize_view import OrganizeView
         src = inspect.getsource(OrganizeView._on_organize_confirmed)
-        self.assertIn("AI 서버를 사용할 수 없어", src)
+        self.assertIn("저장목록", src)
+        self.assertIn("태그를 설정", src)
+        self.assertNotIn("_start_untagged_analysis", src)
 
 
 # ── 8. Apply 안전성 유지 ─────────────────────────────────────────────────────
@@ -472,13 +474,13 @@ class TestBatch10AIFailureSafety(unittest.TestCase):
         self.assertIn("try:", src)
         self.assertIn("except Exception", src)
 
-    def test_tagged_files_still_processed_when_ai_unavailable(self):
-        """AI 사용 불가여도 태그 있는 파일은 Apply 진행 가능해야 한다."""
+    def test_only_saved_tagged_files_are_processed(self):
+        """정리는 AI 상태와 무관하게 저장목록의 태그된 파일만 진행한다."""
         from src.ui.views.organize_view import OrganizeView
         src = inspect.getsource(OrganizeView._on_organize_confirmed)
-        # AI 불가 + 태그 있는 파일 존재 → "태그 있는 파일만 정리" 옵션이 있어야 함
-        self.assertIn("태그 있는", src)
-        self.assertIn("개만 정리", src)
+        self.assertIn("태그가 설정된", src)
+        self.assertIn("파일만 정리", src)
+        self.assertIn("미태깅 파일", src)
 
 
 # ── 10. DB schema v2 유지 ────────────────────────────────────────────────────

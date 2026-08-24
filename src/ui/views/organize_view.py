@@ -13,7 +13,7 @@ MainWindow의 QStackedWidget에 addWidget(OrganizeView())로 바로 꽂아서 �
 import json
 import os
 from pathlib import Path
-from PySide6.QtCore import Qt, Signal, QTimer
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
@@ -638,19 +638,11 @@ class OrganizeView(QWidget):
             # 태깅 완료 시에만 DB 모델 전체를 다시 읽는다.
             self._table_screen.set_rows(current_rows)
  
-            # AI 처리 옵션 물어보기
-            reply = QMessageBox.question(
-                self, 
-                "AI 처리", 
-                f"{len(scanned_files)}개의 파일을 스캔했습니다.\n지금 AI 태깅을 진행하시겠습니까?",
-                QMessageBox.Yes | QMessageBox.No
+            QMessageBox.information(
+                self, "경로 추가됨",
+                f"경로가 추가되고 {len(scanned_files)}개 파일이 로드되었습니다:\n{path}\n\n"
+                "AI 태깅은 저장목록의 '미태깅 전체 AI 태깅'에서 선택하여 실행할 수 있습니다.",
             )
- 
-            if reply == QMessageBox.Yes:
-                self._start_ai_tagging([path])
-            else:
-                QMessageBox.information(self, "경로 추가됨", 
-                    f"경로가 추가되고 {len(scanned_files)}개 파일이 로드되었습니다:\n{path}")
  
         except Exception as e:
             QMessageBox.critical(self, "오류", f"파일 스캔 중 오류가 발생했습니다:\n{str(e)}")
@@ -833,22 +825,6 @@ class OrganizeView(QWidget):
         # Batch 9: Plan이 준비되면 이대로 정리하기 버튼 활성화
         self._grouped_screen.set_confirm_enabled(True)
         self._show_grouped()
-        if untagged and self._check_ai_available():
-            QTimer.singleShot(0, lambda paths=list(untagged): self._offer_untagged_analysis(paths))
-
-    def _offer_untagged_analysis(self, paths):
-        """Offer the missing AI-tagging phase immediately after the safe scan phase."""
-        if not paths or self._untagged_worker and self._untagged_worker.isRunning():
-            return
-        reply = QMessageBox.question(
-            self, "미분류 파일 AI 분석",
-            f"스캔은 완료됐지만 {len(paths):,}개 파일은 아직 AI 분석 전입니다.\n\n"
-            "이 파일들을 지금 AI로 분석해 태그와 정리 그룹을 생성하시겠습니까?\n"
-            "파일 수에 따라 시간이 오래 걸릴 수 있으며 실제 파일은 아직 이동되지 않습니다.",
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
-        )
-        if reply == QMessageBox.Yes:
-            self._start_untagged_analysis(paths)
 
     def _on_plan_error(self, message):
         self._close_plan_dialog()
@@ -887,73 +863,24 @@ class OrganizeView(QWidget):
         self._last_untagged_files = untagged
 
         if not grouped_files:
-            # 태그 있는 파일이 전혀 없음
-            if untagged:
-                ai_ok = self._check_ai_available()
-                if ai_ok:
-                    reply = QMessageBox.question(
-                        self, "파일 정리",
-                        f"정리할 태그가 있는 파일이 없습니다.\n"
-                        f"미분류(AI 태그 없음): {len(untagged)}개\n\n"
-                        "AI 분석을 실행하여 태그를 생성할까요?",
-                        QMessageBox.Yes | QMessageBox.No,
-                        QMessageBox.No,
-                    )
-                    if reply == QMessageBox.Yes:
-                        self._start_untagged_analysis(untagged)
-                    return
-                else:
-                    QMessageBox.information(
-                        self, "파일 정리",
-                        f"정리할 태그가 있는 파일이 없습니다.\n"
-                        f"미분류 파일: {len(untagged)}개\n\n"
-                        "AI 서버를 사용할 수 없어 자동 분석이 불가합니다.\n"
-                        "설정의 '태그 부착' 버튼으로 AI 태깅을 먼저 실행해 주세요.",
-                    )
-                    return
-            else:
-                QMessageBox.information(
-                    self, "파일 정리",
-                    "정리할 태그가 있는 파일이 없습니다.\n"
-                    "'설정 > 태그 부착'으로 먼저 AI 태깅을 실행하세요.",
-                )
-                return
+            QMessageBox.information(
+                self, "파일 정리",
+                f"저장목록에서 태그가 설정된 정리 대상이 없습니다.\n"
+                f"미태깅 파일: {len(untagged)}개\n\n"
+                "먼저 저장목록에서 사용할 파일과 태그를 설정해 주세요.",
+            )
+            return
 
         # 태그 있는 파일과 미분류 파일이 혼재하는 경우
         if untagged:
-            ai_ok = self._check_ai_available()
-            if ai_ok:
-                dlg = QMessageBox(self)
-                dlg.setWindowTitle("파일 정리 옵션")
-                dlg.setText(
-                    f"일부 파일에 AI 태그가 없습니다.\n\n"
-                    f"태그 있음 (정리 가능): {len(organize_files)}개\n"
-                    f"미분류 (AI 태그 없음): {len(untagged)}개"
-                )
-                btn_analyze = dlg.addButton("AI 분석 후 다시 시도", QMessageBox.ActionRole)
-                btn_proceed = dlg.addButton(
-                    f"태그 있는 {len(organize_files)}개만 정리", QMessageBox.ActionRole
-                )
-                dlg.addButton("취소", QMessageBox.RejectRole)
-                dlg.exec()
-                clicked = dlg.clickedButton()
-                if clicked == btn_analyze:
-                    self._start_untagged_analysis(untagged)
-                    return
-                if clicked != btn_proceed:
-                    return  # 취소
-            else:
-                reply = QMessageBox.question(
-                    self, "파일 정리",
-                    f"일부 파일에 AI 태그가 없습니다 (AI 서버 미응답).\n\n"
-                    f"태그 있음: {len(organize_files)}개\n"
-                    f"미분류: {len(untagged)}개\n\n"
-                    f"태그 있는 {len(organize_files)}개만 정리할까요?",
-                    QMessageBox.Yes | QMessageBox.No,
-                    QMessageBox.No,
-                )
-                if reply != QMessageBox.Yes:
-                    return
+            reply = QMessageBox.question(
+                self, "파일 정리",
+                f"저장목록에서 태그가 설정된 {len(organize_files)}개 파일만 정리합니다.\n"
+                f"미태깅 파일 {len(untagged)}개는 제외됩니다. 계속할까요?",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
 
         # 대상 기본 폴더 선택
         base_path = QFileDialog.getExistingDirectory(self, "정리할 기본 폴더 선택")

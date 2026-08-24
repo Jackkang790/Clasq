@@ -328,6 +328,7 @@ class SearchView(QWidget):
             self._attached_analysis = item.get("result") or {}
             self.add_message(self._format_attached_analysis(self._attached_analysis), is_user=False,
                              kind="result")
+            self._add_attachment_context_controls()
 
     @staticmethod
     def _format_attached_analysis(result):
@@ -385,6 +386,39 @@ class SearchView(QWidget):
     def _on_attached_answer(self, answer):
         self.hide_loading()
         self.add_message(str(answer), is_user=False, kind="result")
+
+    @staticmethod
+    def _is_attachment_exit_command(query):
+        normalized = " ".join((query or "").casefold().split())
+        return normalized in {
+            "첨부 분석 종료", "분석 모드 종료", "분석 모드 끝", "첨부 모드 종료",
+            "이 파일 그만", "새 대화", "새 대화 시작",
+        }
+
+    def _end_attachment_context(self):
+        had_context = bool(self._attached_file_path)
+        self._attached_file_path = None
+        self._attached_analysis = None
+        self._ai_services = None
+        if had_context:
+            self.add_message("첨부 파일 분석 모드를 종료했습니다. 이제 일반 검색과 대화를 사용할 수 있습니다.",
+                             is_user=False)
+
+    def _add_attachment_context_controls(self):
+        row = QHBoxLayout()
+        end_btn = QPushButton("첨부 분석 종료")
+        end_btn.setFixedHeight(32)
+        end_btn.setCursor(Qt.PointingHandCursor)
+        end_btn.setStyleSheet("""
+            QPushButton { background: #FFFFFF; color: #6C5CE7; border: 1px solid #6C5CE7;
+                          border-radius: 7px; padding: 0 12px; font-weight: bold; }
+            QPushButton:hover { background: #F0EDFE; }
+        """)
+        end_btn.clicked.connect(self._end_attachment_context)
+        row.addWidget(end_btn)
+        row.addStretch()
+        self.chat_layout.insertLayout(self.chat_layout.count() - 1, row)
+        self.scroll_to_bottom()
 
     def process_query(self, query: str):
         self.add_message(query, is_user=True)
@@ -605,6 +639,9 @@ class SearchView(QWidget):
 
     def process_query(self, query: str):
         self.add_message(query, is_user=True)
+        if self._is_attachment_exit_command(query):
+            self._end_attachment_context()
+            return
         if self.core is not None and self._should_use_attached_context(query, self._attached_file_path):
             self._ask_about_attached_file(query)
             return

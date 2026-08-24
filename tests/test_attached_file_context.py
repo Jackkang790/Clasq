@@ -49,6 +49,12 @@ class AttachedFileContextTests(unittest.TestCase):
             self.assertTrue(SearchView._should_use_attached_context("주인공은 누구야?", str(video)))
             self.assertFalse(SearchView._should_use_attached_context("PDF 파일 찾아줘", str(video)))
 
+    def test_attachment_analysis_has_explicit_exit_commands(self):
+        self.assertTrue(SearchView._is_attachment_exit_command("첨부 분석 종료"))
+        self.assertTrue(SearchView._is_attachment_exit_command("분석 모드 끝"))
+        self.assertTrue(SearchView._is_attachment_exit_command("새 대화"))
+        self.assertFalse(SearchView._is_attachment_exit_command("이 영상 요약해줘"))
+
     def test_document_followup_uses_extracted_content(self):
         class Extractor:
             def extract(self, _path):
