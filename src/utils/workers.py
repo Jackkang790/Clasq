@@ -48,7 +48,7 @@ class FolderScanAndTagWorker(QThread):
 
             total_count = len(files_to_process)
 
-            succeeded, failures = 0, []
+            succeeded, failures, results = 0, [], []
             for idx, file_path in enumerate(files_to_process, start=1):
                 file_name = os.path.basename(file_path)
                 self.progress.emit(f"AI 분석 중 ({idx}/{total_count}): {file_name}")
@@ -57,12 +57,14 @@ class FolderScanAndTagWorker(QThread):
                     result = self.core.process_file_upload(file_path)
                     if result.get("status") == "SUCCESS":
                         succeeded += 1
+                        results.append({"file_path": file_path, "result": result})
                     else:
                         failures.append({"file_path": file_path, "reason": result.get("error") or result.get("message", "분석 실패")})
                 except Exception as exc:
                     failures.append({"file_path": file_path, "reason": str(exc)})
 
-            summary = {"total": total_count, "success": succeeded, "failed": failures}
+            summary = {"total": total_count, "success": succeeded, "failed": failures,
+                       "results": results}
             self.taggingFinished.emit()  # 기존 UI 연결 호환성
             self.finished.emit(summary)
             log.info(

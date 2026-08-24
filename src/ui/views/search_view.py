@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 # 신규 위젯 임포트
 from src.ui.widgets.fileupload_view import FileUploadView
+from src.ui.ai_workers import AIFileWorker, AIServiceContainer
 from src.utils.search_engine import SearchEngine
 from src.utils.workers import FolderScanAndTagWorker
 
@@ -109,6 +110,9 @@ class SearchView(QWidget):
         self._loading_bubble = None
         self._loading_timer = None
         self._loading_dot_count = 0
+        self._attached_file_path = None
+        self._attached_analysis = None
+        self._ai_services = None
 
         self.setAcceptDrops(True)
 
@@ -296,6 +300,8 @@ class SearchView(QWidget):
         self.process_query(query)
 
     def on_file_attached(self, file_path: str):
+        self._attached_file_path = os.path.abspath(os.path.normpath(file_path))
+        self._attached_analysis = None
         if self.stacked_layout.currentIndex() == 0:
             self.stacked_layout.setCurrentIndex(1)
         self.add_message(f"📎 [파일 첨부]: {file_path}", is_user=True)
@@ -315,7 +321,71 @@ class SearchView(QWidget):
             f"파일 분석 완료: 성공 {summary.get('success', 0)}개, 실패 {len(summary.get('failed', []))}개",
             is_user=False,
         )
-        
+        results = summary.get("results", [])
+        if len(results) == 1:
+            item = results[0]
+            self._attached_file_path = item.get("file_path") or self._attached_file_path
+            self._attached_analysis = item.get("result") or {}
+            self.add_message(self._format_attached_analysis(self._attached_analysis), is_user=False,
+                             kind="result")
+
+    @staticmethod
+    def _format_attached_analysis(result):
+        metadata = (result or {}).get("metadata") or {}
+        title = metadata.get("display_name") or (result or {}).get("file_info", {}).get("original_name") or "첨부 파일"
+        description = metadata.get("description") or metadata.get("summary") or "분석 설명이 없습니다."
+        tags = metadata.get("tags") or []
+        if not isinstance(tags, list):
+            tags = [str(tags)]
+        lines = [f"{title}", str(description)]
+        if tags:
+            lines.append("태그: " + ", ".join(f"#{str(tag).lstrip('#')}" for tag in tags))
+        timeline = metadata.get("timeline") or []
+        if isinstance(timeline, list) and timeline:
+            scenes = []
+            for entry in timeline[:5]:
+                if isinstance(entry, dict):
+                    scenes.append(f"{entry.get('time', '')} {entry.get('scene', '')}".strip())
+            if scenes:
+                lines.append("주요 장면: " + " / ".join(scenes))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _should_use_attached_context(query, file_path):
+        if not file_path or not query or not os.path.exists(file_path):
+            return False
+        normalized = " ".join(query.casefold().split())
+        explicit_search = ("찾아줘", "검색해", "파일 목록", "무슨 파일", "어떤 파일", "몇 개")
+        return not any(marker in normalized for marker in explicit_search)
+
+    def _ask_about_attached_file(self, query):
+        extension = os.path.splitext(self._attached_file_path)[1].casefold()
+        if extension in {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm"}:
+            operation = AIFileWorker.ASK_VIDEO
+        elif extension in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif"}:
+            operation = AIFileWorker.ASK_IMAGE
+        else:
+            operation = AIFileWorker.ASK_DOCUMENT
+        if self._ai_services is None:
+            analyzer = self.core.analyzer
+            self._ai_services = AIServiceContainer(
+                main_processor=self.core,
+                image_analyzer=analyzer.image_analyzer,
+                video_analyzer=analyzer.video_analyzer,
+            )
+        self.show_loading()
+        self._attached_worker = AIFileWorker(
+            operation, self._attached_file_path, services=self._ai_services,
+            user_prompt=query, parent=self,
+        )
+        self._attached_worker.succeeded.connect(self._on_attached_answer)
+        self._attached_worker.failed.connect(self._on_query_error)
+        self._attached_worker.start()
+
+    def _on_attached_answer(self, answer):
+        self.hide_loading()
+        self.add_message(str(answer), is_user=False, kind="result")
+
     def process_query(self, query: str):
         self.add_message(query, is_user=True)
         if self.core is not None:
@@ -535,6 +605,9 @@ class SearchView(QWidget):
 
     def process_query(self, query: str):
         self.add_message(query, is_user=True)
+        if self.core is not None and self._should_use_attached_context(query, self._attached_file_path):
+            self._ask_about_attached_file(query)
+            return
         self.show_loading()
 
         if self.core is not None:

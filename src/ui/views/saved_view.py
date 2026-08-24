@@ -61,8 +61,19 @@ class SavedView(QWidget):
         """)
         self.edit_btn.clicked.connect(self.on_save_changes)
 
+        self.delete_selected_btn = QPushButton("선택 삭제")
+        self.delete_selected_btn.setFixedSize(110, 38)
+        self.delete_selected_btn.setStyleSheet("""
+            QPushButton { background-color: #FFFFFF; color: #E74C3C; font-size: 14px;
+                          font-weight: bold; border: 1px solid #E74C3C; border-radius: 8px; }
+            QPushButton:hover { background-color: #FDEDEC; }
+            QPushButton:pressed { background-color: #FADBD8; }
+        """)
+        self.delete_selected_btn.clicked.connect(self.on_delete_selected)
+
         header_layout.addWidget(title_label)
         header_layout.addStretch()
+        header_layout.addWidget(self.delete_selected_btn)
         header_layout.addWidget(self.edit_btn)
         main_layout.addLayout(header_layout)
 
@@ -70,6 +81,8 @@ class SavedView(QWidget):
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(["파일명", "태그", "파일 경로", ""])
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
         # 행 높이 기본값 설정 (버튼 및 텍스트 편집 상자 깨짐 방지)
         self.table.verticalHeader().setDefaultSectionSize(48)
@@ -334,3 +347,41 @@ class SavedView(QWidget):
             )
         else:
             QMessageBox.warning(self, "삭제 실패", f"'{file_name}' DB 레코드 삭제 중 오류가 발생했습니다.")
+
+    def selected_records(self):
+        """Return unique selected DB records in visual row order."""
+        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
+        records = []
+        for row in rows:
+            item = self.table.item(row, 0)
+            if item is not None and item.data(Qt.UserRole) is not None:
+                records.append((item.data(Qt.UserRole), item.text()))
+        return records
+
+    def on_delete_selected(self):
+        """Delete selected DB records in one user-confirmed action; files remain on disk."""
+        if self.core is None:
+            QMessageBox.warning(self, "오류", "DB에 연결되어 있지 않습니다.")
+            return
+        records = self.selected_records()
+        if not records:
+            QMessageBox.information(self, "선택 삭제", "삭제할 항목을 하나 이상 선택해주세요.")
+            return
+        reply = QMessageBox.question(
+            self, "선택 삭제 확인",
+            f"선택한 {len(records)}개 항목을 DB 저장 목록에서 삭제하시겠습니까?\n"
+            "실제 파일은 삭제되지 않고 그대로 유지됩니다.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        failed = [name for file_id, name in records if not self.core.registry.delete_record(file_id)]
+        self.load_data()
+        self._refresh_database_views()
+        if failed:
+            QMessageBox.warning(
+                self, "일부 삭제 실패",
+                f"성공 {len(records) - len(failed)}개, 실패 {len(failed)}개",
+            )
+        else:
+            QMessageBox.information(self, "완료", f"선택한 {len(records)}개 항목을 DB에서 삭제했습니다.")

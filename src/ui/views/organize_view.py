@@ -13,7 +13,7 @@ MainWindow의 QStackedWidget에 addWidget(OrganizeView())로 바로 꽂아서 �
 import json
 import os
 from pathlib import Path
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtGui import QPalette, QColor
 from PySide6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
@@ -833,6 +833,22 @@ class OrganizeView(QWidget):
         # Batch 9: Plan이 준비되면 이대로 정리하기 버튼 활성화
         self._grouped_screen.set_confirm_enabled(True)
         self._show_grouped()
+        if untagged and self._check_ai_available():
+            QTimer.singleShot(0, lambda paths=list(untagged): self._offer_untagged_analysis(paths))
+
+    def _offer_untagged_analysis(self, paths):
+        """Offer the missing AI-tagging phase immediately after the safe scan phase."""
+        if not paths or self._untagged_worker and self._untagged_worker.isRunning():
+            return
+        reply = QMessageBox.question(
+            self, "미분류 파일 AI 분석",
+            f"스캔은 완료됐지만 {len(paths):,}개 파일은 아직 AI 분석 전입니다.\n\n"
+            "이 파일들을 지금 AI로 분석해 태그와 정리 그룹을 생성하시겠습니까?\n"
+            "파일 수에 따라 시간이 오래 걸릴 수 있으며 실제 파일은 아직 이동되지 않습니다.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Yes:
+            self._start_untagged_analysis(paths)
 
     def _on_plan_error(self, message):
         self._close_plan_dialog()

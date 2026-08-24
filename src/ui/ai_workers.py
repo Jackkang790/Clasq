@@ -59,6 +59,7 @@ class AIFileWorker(QThread):
     ANALYZE_FILE = "analyze_file"
     ASK_IMAGE = "ask_image"
     ASK_VIDEO = "ask_video"
+    ASK_DOCUMENT = "ask_document"
 
     def __init__(
         self,
@@ -93,6 +94,17 @@ class AIFileWorker(QThread):
             elif self.operation == self.ASK_VIDEO:
                 self.status.emit("영상 대표 장면을 확인하고 답변을 생성하고 있습니다...")
                 result = video_analyzer.ask_video(self.file_path, self.user_prompt)
+            elif self.operation == self.ASK_DOCUMENT:
+                self.status.emit("첨부 문서 내용을 확인하고 답변을 생성하고 있습니다...")
+                extracted_text, extract_status = main_processor.extractor.extract(self.file_path)
+                if extract_status != "SUCCESS" or not (extracted_text or "").strip():
+                    raise ValueError(f"이 첨부 파일은 내용 기반 질문을 지원하지 않습니다: {extract_status}")
+                prompt = (
+                    "다음 첨부 파일 내용만 근거로 사용자의 질문에 답하세요. "
+                    "내용에 근거가 없으면 확인할 수 없다고 답하세요.\n\n"
+                    f"파일 내용:\n{extracted_text[:24000]}\n\n사용자 질문: {self.user_prompt}"
+                )
+                result = main_processor.analyzer._qwen_client.request_text(prompt, temperature=0)
             else:
                 raise ValueError(f"지원하지 않는 AI 작업입니다: {self.operation}")
             self.succeeded.emit(result)
