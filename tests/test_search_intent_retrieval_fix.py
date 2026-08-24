@@ -141,6 +141,37 @@ class SearchIntentRetrievalFixTests(unittest.TestCase):
         self.assertEqual(len(rows[0]), 5)
         self.assertNotIn("Cryptography", repr(rows[0]))
 
+    def test_index_only_content_is_searchable_without_files_row(self):
+        path = str(self.root / "indexed-only.txt")
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.execute(
+                "INSERT INTO file_text_index(file_path,extracted_text,extract_status,extractor_type) VALUES(?,?,?,?)",
+                (path, "A unique searchable passage about orbital mechanics.", "success", "text"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        rows = self.engine.search_files_smart(["orbital mechanics"])[0]
+        self.assertEqual([(row[1], row[2]) for row in rows], [("indexed-only.txt", path)])
+        self.assertEqual(len(rows[0]), 5)
+        self.assertNotIn("orbital mechanics", repr(rows[0]))
+
+    def test_index_only_filename_and_type_search(self):
+        path = str(self.root / "indexed-video.mp4")
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.execute(
+                "INSERT INTO file_text_index(file_path,extracted_text,extract_status,extractor_type) VALUES(?,?,?,?)",
+                (path, "", "success", "metadata"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        self.assertEqual(self.engine.probe_filename("indexed-video")[0][1], "indexed-video.mp4")
+        rows = self.engine.search_files_smart([], [".mp4"])[0]
+        self.assertIn("indexed-video.mp4", [row[1] for row in rows])
+
 
 if __name__ == "__main__":
     unittest.main()

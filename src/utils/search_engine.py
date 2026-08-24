@@ -176,7 +176,21 @@ class SearchEngine:
             all_rows = conn.execute(
                 "SELECT id, file_name, file_path, ai_comment, category FROM files"
             ).fetchall()
-            return [row for row in all_rows if os.path.splitext(row[1] or "")[0].casefold() == candidate.casefold()]
+            matches = [row for row in all_rows if os.path.splitext(row[1] or "")[0].casefold() == candidate.casefold()]
+            if matches:
+                return matches[:self.result_limit]
+            indexed_paths = conn.execute(
+                """SELECT fti.file_path FROM file_text_index fti
+                   WHERE fti.extract_status='success'
+                     AND NOT EXISTS (SELECT 1 FROM files f WHERE f.file_path=fti.file_path)"""
+            ).fetchall()
+            indexed_rows = [
+                (None, os.path.basename(path), path, "", "")
+                for (path,) in indexed_paths
+                if (os.path.basename(path).casefold() == candidate.casefold()
+                    or os.path.splitext(os.path.basename(path))[0].casefold() == candidate.casefold())
+            ]
+            return indexed_rows[:self.result_limit]
         finally:
             conn.close()
 
@@ -202,7 +216,22 @@ class SearchEngine:
         cursor = conn.cursor()
 
         # tags 컬럼은 DB 버전에 따라 없을 수 있으므로 제외 (UI는 *_ 언패킹으로 호환)
-        query = "SELECT id, file_name, file_path, ai_comment, category FROM files WHERE 1=1"
+        # Text indexing intentionally covers managed files before AI tagging creates a
+        # files row.  Include those index-only paths as minimal search candidates;
+        # NOT EXISTS keeps tagged files authoritative and prevents duplicates.
+        conn.create_function("path_basename", 1, lambda value: os.path.basename(value or ""))
+        query = """WITH candidates AS (
+            SELECT id, file_name, file_path, ai_comment, category,
+                   file_modified_at, file_mtime_ns, updated_at, created_at
+            FROM files
+            UNION ALL
+            SELECT NULL, path_basename(fti.file_path), fti.file_path, '', '',
+                   NULL, fti.file_mtime_ns, fti.updated_at, fti.updated_at
+            FROM file_text_index fti
+            WHERE fti.extract_status='success'
+              AND NOT EXISTS (SELECT 1 FROM files f WHERE f.file_path=fti.file_path)
+        )
+        SELECT id, file_name, file_path, ai_comment, category FROM candidates WHERE 1=1"""
         params = []
 
         if keywords:
@@ -224,7 +253,7 @@ class SearchEngine:
                 for syn in synonyms:
                     synonym_conditions.append(
                         "(file_name LIKE ? OR ai_comment LIKE ? OR category LIKE ? OR EXISTS ("
-                        "SELECT 1 FROM file_text_index fti WHERE fti.file_path=files.file_path "
+                        "SELECT 1 FROM file_text_index fti WHERE fti.file_path=candidates.file_path "
                         "AND fti.extract_status='success' AND fti.extracted_text LIKE ?))")
                     params.extend([f"%{syn}%"] * 4)
 
