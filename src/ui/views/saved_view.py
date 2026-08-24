@@ -1,3 +1,5 @@
+import os
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -12,6 +14,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from src.ui.widgets.progress_dialog import TaskProgressDialog
+from src.utils.workers import FolderScanAndTagWorker
+
 
 class SavedView(QWidget):
 
@@ -20,6 +25,8 @@ class SavedView(QWidget):
         self.core = core
         self.refresh_manager = refresh_manager
         self._original_rows = {}  # row -> (file_id, file_name, tags)
+        self._tagging_worker = None
+        self._tagging_dialog = None
         self.init_ui()
         self.load_data()
 
@@ -61,8 +68,25 @@ class SavedView(QWidget):
         """)
         self.edit_btn.clicked.connect(self.on_save_changes)
 
+        self.delete_selected_btn = QPushButton("선택 삭제")
+        self.delete_selected_btn.setFixedSize(110, 38)
+        self.delete_selected_btn.setStyleSheet("""
+            QPushButton { background-color: #FFFFFF; color: #E74C3C; font-size: 14px;
+                          font-weight: bold; border: 1px solid #E74C3C; border-radius: 8px; }
+            QPushButton:hover { background-color: #FDEDEC; }
+            QPushButton:pressed { background-color: #FADBD8; }
+        """)
+        self.delete_selected_btn.clicked.connect(self.on_delete_selected)
+
+        self.tag_untagged_btn = QPushButton("미태깅 전체 AI 태깅")
+        self.tag_untagged_btn.setFixedSize(160, 38)
+        self.tag_untagged_btn.setStyleSheet(self.edit_btn.styleSheet())
+        self.tag_untagged_btn.clicked.connect(self.on_tag_all_untagged)
+
         header_layout.addWidget(title_label)
         header_layout.addStretch()
+        header_layout.addWidget(self.tag_untagged_btn)
+        header_layout.addWidget(self.delete_selected_btn)
         header_layout.addWidget(self.edit_btn)
         main_layout.addLayout(header_layout)
 
@@ -70,6 +94,8 @@ class SavedView(QWidget):
         self.table.setColumnCount(4)
         self.table.setHorizontalHeaderLabels(["파일명", "태그", "파일 경로", ""])
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
 
         # 행 높이 기본값 설정 (버튼 및 텍스트 편집 상자 깨짐 방지)
         self.table.verticalHeader().setDefaultSectionSize(48)
@@ -334,3 +360,112 @@ class SavedView(QWidget):
             )
         else:
             QMessageBox.warning(self, "삭제 실패", f"'{file_name}' DB 레코드 삭제 중 오류가 발생했습니다.")
+
+    def selected_records(self):
+        """Return unique selected DB records in visual row order."""
+        rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
+        records = []
+        for row in rows:
+            item = self.table.item(row, 0)
+            if item is not None and item.data(Qt.UserRole) is not None:
+                records.append((item.data(Qt.UserRole), item.text()))
+        return records
+
+    def on_delete_selected(self):
+        """Delete selected DB records in one user-confirmed action; files remain on disk."""
+        if self.core is None:
+            QMessageBox.warning(self, "오류", "DB에 연결되어 있지 않습니다.")
+            return
+        records = self.selected_records()
+        if not records:
+            QMessageBox.information(self, "선택 삭제", "삭제할 항목을 하나 이상 선택해주세요.")
+            return
+        reply = QMessageBox.question(
+            self, "선택 삭제 확인",
+            f"선택한 {len(records)}개 항목을 DB 저장 목록에서 삭제하시겠습니까?\n"
+            "실제 파일은 삭제되지 않고 그대로 유지됩니다.",
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+        failed = [name for file_id, name in records if not self.core.registry.delete_record(file_id)]
+        self.load_data()
+        self._refresh_database_views()
+        if failed:
+            QMessageBox.warning(
+                self, "일부 삭제 실패",
+                f"성공 {len(records) - len(failed)}개, 실패 {len(failed)}개",
+            )
+        else:
+            QMessageBox.information(self, "완료", f"선택한 {len(records)}개 항목을 DB에서 삭제했습니다.")
+
+    def _untagged_file_paths(self):
+        """Return existing saved-list files whose tag field is empty."""
+        paths = []
+        for row in range(self.table.rowCount()):
+            tag_item = self.table.item(row, 1)
+            path_item = self.table.item(row, 2)
+            if path_item and not (tag_item.text().strip() if tag_item else ""):
+                path = path_item.text().strip()
+                if path and os.path.isfile(path):
+                    paths.append(path)
+        return paths
+
+    def on_tag_all_untagged(self):
+        """Explicitly AI-tag every currently untagged saved-list file."""
+        if self.core is None:
+            QMessageBox.warning(self, "AI 태깅", "DB에 연결되어 있지 않습니다.")
+            return
+        if self._tagging_worker and self._tagging_worker.isRunning():
+            QMessageBox.information(self, "AI 태깅", "이미 AI 태깅 작업이 진행 중입니다.")
+            return
+
+        paths = self._untagged_file_paths()
+        if not paths:
+            QMessageBox.information(self, "AI 태깅", "AI 태깅이 필요한 파일이 없습니다.")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "미태깅 파일 AI 태깅",
+            f"태그가 없는 {len(paths):,}개 파일을 AI로 분석해 태깅하시겠습니까?\n"
+            "이미 태그된 파일은 변경하지 않으며, 파일 이동은 수행하지 않습니다.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        self._tagging_dialog = TaskProgressDialog(
+            "미태깅 파일 AI 태깅", "AI 분석을 준비하고 있습니다...", parent=self, unit="파일",
+        )
+        self._tagging_worker = FolderScanAndTagWorker(paths, self.core)
+        self._tagging_worker.progress.connect(self._tagging_dialog.setLabelText)
+        self._tagging_worker.fileProgress.connect(self._tagging_dialog.update_progress)
+        self._tagging_worker.finished.connect(self._on_bulk_tagging_finished)
+        self._tagging_worker.error.connect(self._on_bulk_tagging_error)
+        self._tagging_worker.start()
+        self._tagging_dialog.show()
+
+    def _close_tagging_dialog(self):
+        if self._tagging_dialog:
+            self._tagging_dialog.close()
+            self._tagging_dialog = None
+
+    def _on_bulk_tagging_finished(self, summary=None):
+        summary = summary or {}
+        self._close_tagging_dialog()
+        self.load_data()
+        self._refresh_database_views()
+        remaining = len(self._untagged_file_paths())
+        QMessageBox.information(
+            self,
+            "AI 태깅 완료",
+            f"성공 {summary.get('success', 0):,}개, "
+            f"실패 {len(summary.get('failed', [])):,}개, "
+            f"남은 미태깅 {remaining:,}개",
+        )
+
+    def _on_bulk_tagging_error(self, message):
+        self._close_tagging_dialog()
+        QMessageBox.critical(self, "AI 태깅 오류", str(message))

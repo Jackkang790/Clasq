@@ -1,0 +1,66 @@
+FFmpeg binary provenance for the Clasq Windows one-dir distribution
+====================================================================
+
+Artifact: ffmpeg.exe
+Version: 8.1.2-full_build-www.gyan.dev
+Provider: gyan.dev
+Architecture: Windows x86-64
+Build type: full static executable
+Size: 242496512 bytes
+SHA-256: ad8f211bc894755e0061c55ab280ae00e8d3d4f15a8cc4372b24cfa247b5942e
+Runtime destination: _internal/runtime/ffmpeg.exe
+
+Observed configuration includes --enable-gpl, --enable-version3 and
+--enable-static. The binary does not contain --enable-nonfree. Its external
+library set includes the following flags (captured from the pinned binary):
+
+  --enable-cairo --enable-fontconfig --enable-iconv --enable-gnutls
+  --enable-lcms2 --enable-libxml2 --enable-gmp --enable-bzlib --enable-lzma
+  --enable-libsnappy --enable-zlib --enable-librist --enable-libsrt
+  --enable-libssh --enable-libzmq --enable-avisynth --enable-libbluray
+  --enable-libcaca --enable-libdvdnav --enable-libdvdread --enable-sdl2
+  --enable-libaribb24 --enable-libaribcaption --enable-libdav1d
+  --enable-libdavs2 --enable-libopenjpeg --enable-libquirc
+  --enable-libuavs3d --enable-libxevd --enable-libzvbi --enable-liboapv
+  --enable-libqrencode --enable-librav1e --enable-libsvtav1
+  --enable-libvvenc --enable-libwebp --enable-libx264 --enable-libx265
+  --enable-libxavs2 --enable-libxeve --enable-libxvid --enable-libaom
+  --enable-libjxl --enable-libsvtjpegxs --enable-libvpx
+  --enable-mediafoundation --enable-libass --enable-frei0r
+  --enable-libfreetype --enable-libfribidi --enable-libharfbuzz
+  --enable-liblensfun --enable-libvidstab --enable-libvmaf --enable-libzimg
+  --enable-amf --enable-cuda-llvm --enable-cuvid --enable-dxva2
+  --enable-d3d11va --enable-d3d12va --enable-ffnvcodec --enable-libvpl
+  --enable-nvdec --enable-nvenc --enable-vaapi --enable-libshaderc
+  --enable-vulkan --enable-libplacebo --enable-opencl --enable-libcdio
+  --enable-openal --enable-libgme --enable-libmodplug --enable-libopenmpt
+  --enable-libopencore-amrwb --enable-libmp3lame --enable-libshine
+  --enable-libtheora --enable-libtwolame --enable-libvo-amrwbenc
+  --enable-libcodec2 --enable-libilbc --enable-libgsm --enable-liblc3
+  --enable-libopencore-amrnb --enable-libopus --enable-libspeex
+  --enable-libvorbis --enable-ladspa --enable-libbs2b --enable-libflite
+  --enable-libmysofa --enable-librubberband --enable-libsoxr
+  --enable-chromaprint --enable-whisper
+
+This list records build inclusion only. It does not determine patent clearance,
+redistribution compatibility, or the license of every external project. FFmpeg's
+upstream LICENSE documentation identifies several GPL-triggering libraries;
+component-level review of this full static build remains required.
+
+The source artifact, validated staging artifact, and packaged executable are
+required by the build checks to have the SHA-256 above. Clasq does not patch or
+recompile this provider artifact; it redistributes the byte-identical executable.
+
+Provider build page and archived 8.1.2 release entry:
+https://www.gyan.dev/ffmpeg/builds/
+
+FFmpeg upstream source tag:
+https://github.com/FFmpeg/FFmpeg/tree/n8.1.2
+
+FFmpeg upstream licensing information:
+https://ffmpeg.org/legal.html
+https://ffmpeg.org/doxygen/8.1/md_LICENSE.html
+
+Provider source/archive references and the exact corresponding-source delivery
+or offer required for public distribution must be confirmed by legal counsel.
+No source-offer wording is created by this technical record.

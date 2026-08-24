@@ -1,0 +1,14 @@
+NVIDIA CUDA Toolkit redistribution reference
+============================================
+
+The Clasq Windows distribution contains these NVIDIA-authored runtime files:
+
+  cudart64_12.dll    file version 6.14.11.12040
+  cublas64_12.dll    file version 6.14.11.1245
+  cublasLt64_12.dll  file version 6.14.11.1245
+
+The official CUDA Toolkit End User License Agreement is published at:
+https://docs.nvidia.com/cuda/eula/index.html
+
+This reference is not a replacement or paraphrase of that agreement. Confirm
+the redistribution terms applicable to these exact DLLs before public release.

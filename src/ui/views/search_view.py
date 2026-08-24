@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 
 # 신규 위젯 임포트
 from src.ui.widgets.fileupload_view import FileUploadView
+from src.ui.ai_workers import AIFileWorker, AIServiceContainer
 from src.utils.search_engine import SearchEngine
 from src.utils.workers import FolderScanAndTagWorker
 
@@ -109,6 +110,9 @@ class SearchView(QWidget):
         self._loading_bubble = None
         self._loading_timer = None
         self._loading_dot_count = 0
+        self._attached_file_path = None
+        self._attached_analysis = None
+        self._ai_services = None
 
         self.setAcceptDrops(True)
 
@@ -296,6 +300,8 @@ class SearchView(QWidget):
         self.process_query(query)
 
     def on_file_attached(self, file_path: str):
+        self._attached_file_path = os.path.abspath(os.path.normpath(file_path))
+        self._attached_analysis = None
         if self.stacked_layout.currentIndex() == 0:
             self.stacked_layout.setCurrentIndex(1)
         self.add_message(f"📎 [파일 첨부]: {file_path}", is_user=True)
@@ -315,7 +321,105 @@ class SearchView(QWidget):
             f"파일 분석 완료: 성공 {summary.get('success', 0)}개, 실패 {len(summary.get('failed', []))}개",
             is_user=False,
         )
-        
+        results = summary.get("results", [])
+        if len(results) == 1:
+            item = results[0]
+            self._attached_file_path = item.get("file_path") or self._attached_file_path
+            self._attached_analysis = item.get("result") or {}
+            self.add_message(self._format_attached_analysis(self._attached_analysis), is_user=False,
+                             kind="result")
+            self._add_attachment_context_controls()
+
+    @staticmethod
+    def _format_attached_analysis(result):
+        metadata = (result or {}).get("metadata") or {}
+        title = metadata.get("display_name") or (result or {}).get("file_info", {}).get("original_name") or "첨부 파일"
+        description = metadata.get("description") or metadata.get("summary") or "분석 설명이 없습니다."
+        tags = metadata.get("tags") or []
+        if not isinstance(tags, list):
+            tags = [str(tags)]
+        lines = [f"{title}", str(description)]
+        if tags:
+            lines.append("태그: " + ", ".join(f"#{str(tag).lstrip('#')}" for tag in tags))
+        timeline = metadata.get("timeline") or []
+        if isinstance(timeline, list) and timeline:
+            scenes = []
+            for entry in timeline[:5]:
+                if isinstance(entry, dict):
+                    scenes.append(f"{entry.get('time', '')} {entry.get('scene', '')}".strip())
+            if scenes:
+                lines.append("주요 장면: " + " / ".join(scenes))
+        return "\n".join(lines)
+
+    @staticmethod
+    def _should_use_attached_context(query, file_path):
+        if not file_path or not query or not os.path.exists(file_path):
+            return False
+        normalized = " ".join(query.casefold().split())
+        explicit_search = ("찾아줘", "검색해", "파일 목록", "무슨 파일", "어떤 파일", "몇 개")
+        return not any(marker in normalized for marker in explicit_search)
+
+    def _ask_about_attached_file(self, query):
+        extension = os.path.splitext(self._attached_file_path)[1].casefold()
+        if extension in {".mp4", ".mkv", ".avi", ".mov", ".wmv", ".webm"}:
+            operation = AIFileWorker.ASK_VIDEO
+        elif extension in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif"}:
+            operation = AIFileWorker.ASK_IMAGE
+        else:
+            operation = AIFileWorker.ASK_DOCUMENT
+        if self._ai_services is None:
+            analyzer = self.core.analyzer
+            self._ai_services = AIServiceContainer(
+                main_processor=self.core,
+                image_analyzer=analyzer.image_analyzer,
+                video_analyzer=analyzer.video_analyzer,
+            )
+        self.show_loading()
+        self._attached_worker = AIFileWorker(
+            operation, self._attached_file_path, services=self._ai_services,
+            user_prompt=query, parent=self,
+        )
+        self._attached_worker.succeeded.connect(self._on_attached_answer)
+        self._attached_worker.failed.connect(self._on_query_error)
+        self._attached_worker.start()
+
+    def _on_attached_answer(self, answer):
+        self.hide_loading()
+        self.add_message(str(answer), is_user=False, kind="result")
+
+    @staticmethod
+    def _is_attachment_exit_command(query):
+        normalized = " ".join((query or "").casefold().split())
+        return normalized in {
+            "첨부 분석 종료", "분석 모드 종료", "분석 모드 끝", "첨부 모드 종료",
+            "이 파일 그만", "새 대화", "새 대화 시작",
+        }
+
+    def _end_attachment_context(self):
+        had_context = bool(self._attached_file_path)
+        self._attached_file_path = None
+        self._attached_analysis = None
+        self._ai_services = None
+        if had_context:
+            self.add_message("첨부 파일 분석 모드를 종료했습니다. 이제 일반 검색과 대화를 사용할 수 있습니다.",
+                             is_user=False)
+
+    def _add_attachment_context_controls(self):
+        row = QHBoxLayout()
+        end_btn = QPushButton("첨부 분석 종료")
+        end_btn.setFixedHeight(32)
+        end_btn.setCursor(Qt.PointingHandCursor)
+        end_btn.setStyleSheet("""
+            QPushButton { background: #FFFFFF; color: #6C5CE7; border: 1px solid #6C5CE7;
+                          border-radius: 7px; padding: 0 12px; font-weight: bold; }
+            QPushButton:hover { background: #F0EDFE; }
+        """)
+        end_btn.clicked.connect(self._end_attachment_context)
+        row.addWidget(end_btn)
+        row.addStretch()
+        self.chat_layout.insertLayout(self.chat_layout.count() - 1, row)
+        self.scroll_to_bottom()
+
     def process_query(self, query: str):
         self.add_message(query, is_user=True)
         if self.core is not None:
@@ -347,6 +451,11 @@ class SearchView(QWidget):
         if action == "UPDATE_TABLE":
             self.add_message(message, is_user=False)
             self._render_search_results(data)
+        elif action == "SHOW_INVENTORY":
+            self.add_message(message, is_user=False)
+        elif action == "OPEN_FILE" and data:
+            self.add_message(message, is_user=False)
+            self.open_in_explorer(data[0][2])
         elif action == "SHOW_CHAT":
             self.add_message(message, is_user=False)
         else:
@@ -384,7 +493,7 @@ class SearchView(QWidget):
                 tooltip_lines.append(f"메모: {ai_comment}")
 
             card = _FileResultCard(file_name, file_path, tooltip="\n".join(tooltip_lines))
-            card.clicked.connect(self.open_in_explorer)
+            card.clicked.connect(self._select_and_open_result)
 
             r, c = divmod(idx, COLUMNS)
             grid.addWidget(card, r, c)
@@ -394,6 +503,11 @@ class SearchView(QWidget):
 
         self.chat_layout.insertLayout(self.chat_layout.count() - 1, row_layout)
         self.scroll_to_bottom()
+
+    def _select_and_open_result(self, file_path: str):
+        if self.core is not None and hasattr(self.core, "select_search_file"):
+            self.core.select_search_file(file_path)
+        self.open_in_explorer(file_path)
 
     # -----------------------------------------------------------------
     # 임시 자연어 파서 (TODO: REQ-011 LLM 의도 파서로 교체 예정)
@@ -525,6 +639,12 @@ class SearchView(QWidget):
 
     def process_query(self, query: str):
         self.add_message(query, is_user=True)
+        if self._is_attachment_exit_command(query):
+            self._end_attachment_context()
+            return
+        if self.core is not None and self._should_use_attached_context(query, self._attached_file_path):
+            self._ask_about_attached_file(query)
+            return
         self.show_loading()
 
         if self.core is not None:

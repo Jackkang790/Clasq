@@ -1,0 +1,144 @@
+{
+  "schema_version": 1,
+  "distribution": "Clasq Windows one-dir",
+  "status_values": ["VERIFIED", "REVIEW REQUIRED", "UNKNOWN / BLOCKER"],
+  "components": [
+    {
+      "id": "ffmpeg",
+      "name": "FFmpeg",
+      "version": "8.1.2-full_build-www.gyan.dev",
+      "role": "runtime bundled executable; invoked as a subprocess for video frame extraction",
+      "bundled": true,
+      "license": "GPL-3.0-or-later (provider build designation; legal applicability review required)",
+      "evidence": [
+        "packaging/ffmpeg-manifest.json",
+        "https://www.gyan.dev/ffmpeg/builds/",
+        "https://ffmpeg.org/legal.html",
+        "https://ffmpeg.org/doxygen/8.1/md_LICENSE.html"
+      ],
+      "license_files": ["THIRD_PARTY_LICENSES/FFmpeg/COPYING.GPLv3", "THIRD_PARTY_LICENSES/FFmpeg/COPYING.LGPLv3", "THIRD_PARTY_LICENSES/FFmpeg/LICENSE.md"],
+      "status": "REVIEW REQUIRED"
+    },
+    {
+      "id": "llama-cpp",
+      "name": "llama.cpp / llama-server",
+      "version": "build 10549, commit b2e5e9b28",
+      "role": "runtime bundled executable and DLLs",
+      "bundled": true,
+      "license": "MIT",
+      "evidence": ["llama-server.exe --version", "https://github.com/ggml-org/llama.cpp/blob/b2e5e9b28/LICENSE"],
+      "license_files": ["THIRD_PARTY_LICENSES/llama.cpp/LICENSE"],
+      "status": "VERIFIED"
+    },
+    {
+      "id": "pyside6-qt",
+      "name": "PySide6, shiboken6 and Qt",
+      "version": "6.11.1",
+      "role": "runtime bundled Python bindings, DLLs and plugins",
+      "bundled": true,
+      "license": "LGPL-3.0-only OR GPL-2.0-only OR GPL-3.0-only (wheel metadata); some Qt modules have different open-source terms",
+      "evidence": ["installed distribution metadata", "https://doc.qt.io/qtforpython-6/index.html", "https://doc.qt.io/qt-6/licensing.html"],
+      "license_files": ["THIRD_PARTY_LICENSES/Qt/LGPL-3.0.txt", "THIRD_PARTY_LICENSES/Qt/GPL-3.0.txt"],
+      "status": "REVIEW REQUIRED"
+    },
+    {
+      "id": "qt-virtual-keyboard",
+      "name": "Qt Virtual Keyboard",
+      "version": "6.11.1",
+      "role": "not bundled in the Batch 26 Windows one-dir; excluded with its unused QML/Quick dependency chain",
+      "bundled": false,
+      "license": "GPL-3.0-only for open-source use, or Qt commercial license",
+      "evidence": ["scripts/filter_qt_runtime.py", "dist-batch26 inventory", "https://doc.qt.io/qt-6/qtvirtualkeyboard-index.html"],
+      "license_files": ["THIRD_PARTY_LICENSES/Qt/GPL-3.0.txt"],
+      "status": "REVIEW REQUIRED"
+    },
+    {
+      "id": "qt-pdf",
+      "name": "Qt PDF",
+      "version": "6.11.1",
+      "role": "not bundled in the Batch 28 Windows one-dir; Clasq PDF text processing remains provided by pypdf",
+      "bundled": false,
+      "license": "part of the Qt/PySide6 licensing review",
+      "evidence": ["scripts/filter_qtpdf_runtime.py", "dist-batch28 inventory", "src/utils/file_pipeline.py"],
+      "license_files": ["THIRD_PARTY_LICENSES/Qt/LGPL-3.0.txt", "THIRD_PARTY_LICENSES/Qt/GPL-3.0.txt"],
+      "status": "REVIEW REQUIRED"
+    },
+    {
+      "id": "python",
+      "name": "Python",
+      "version": "3.13.15",
+      "role": "runtime bundled interpreter",
+      "bundled": true,
+      "license": "Python Software Foundation License Version 2 and incorporated licenses",
+      "evidence": ["python313.dll version resource", "https://docs.python.org/3.13/license.html"],
+      "license_files": ["THIRD_PARTY_LICENSES/Python/LICENSE.txt"],
+      "status": "VERIFIED"
+    },
+    {
+      "id": "openssl",
+      "name": "OpenSSL",
+      "version": "3.0.21",
+      "role": "runtime bundled TLS libraries",
+      "bundled": true,
+      "license": "Apache-2.0",
+      "evidence": ["libcrypto-3.dll and libssl-3.dll version resources", "https://www.openssl.org/source/license.html"],
+      "license_files": ["THIRD_PARTY_LICENSES/OpenSSL/LICENSE.txt"],
+      "status": "VERIFIED"
+    },
+    {
+      "id": "nvidia-cuda",
+      "name": "NVIDIA CUDA Runtime and cuBLAS",
+      "version": "CUDA 12 family; packaged DLL file versions 6.14.11.12040 and 6.14.11.1245",
+      "role": "runtime bundled CUDA DLLs used by llama.cpp GPU backend",
+      "bundled": true,
+      "license": "NVIDIA CUDA Toolkit End User License Agreement",
+      "evidence": ["packaged DLL version resources", "https://docs.nvidia.com/cuda/eula/index.html"],
+      "license_files": ["THIRD_PARTY_LICENSES/NVIDIA/CUDA-EULA-reference.txt"],
+      "status": "REVIEW REQUIRED"
+    },
+    {
+      "id": "pillow", "name": "Pillow", "version": "12.3.0", "role": "runtime bundled Python package", "bundled": true,
+      "license": "MIT-CMU", "evidence": ["installed distribution metadata"], "license_files": ["THIRD_PARTY_LICENSES/Python-Packages/Pillow-LICENSE"], "status": "VERIFIED"
+    },
+    {
+      "id": "lxml", "name": "lxml", "version": "6.1.1", "role": "runtime bundled Python package", "bundled": true,
+      "license": "BSD-3-Clause", "evidence": ["installed distribution metadata"], "license_files": ["THIRD_PARTY_LICENSES/Python-Packages/lxml-LICENSE.txt", "THIRD_PARTY_LICENSES/Python-Packages/lxml-LICENSES.txt"], "status": "VERIFIED"
+    },
+    {
+      "id": "requests", "name": "Requests", "version": "2.34.2", "role": "runtime bundled Python package", "bundled": true,
+      "license": "Apache-2.0", "evidence": ["installed distribution metadata"], "license_files": ["THIRD_PARTY_LICENSES/Python-Packages/requests-LICENSE", "THIRD_PARTY_LICENSES/Python-Packages/requests-NOTICE"], "status": "VERIFIED"
+    },
+    {
+      "id": "document-packages", "name": "python-docx / python-pptx / openpyxl / pypdf", "version": "1.2.0 / 1.0.2 / 3.1.5 / 6.15.0", "role": "runtime bundled document readers", "bundled": true,
+      "license": "MIT / MIT / MIT / BSD-3-Clause", "evidence": ["installed distribution metadata"], "license_files": ["THIRD_PARTY_LICENSES/Python-Packages/python-docx-LICENSE", "THIRD_PARTY_LICENSES/Python-Packages/python-pptx-LICENSE", "THIRD_PARTY_LICENSES/Python-Packages/openpyxl-LICENCE.rst", "THIRD_PARTY_LICENSES/Python-Packages/pypdf-LICENSE"], "status": "VERIFIED"
+    },
+    {
+      "id": "requests-dependencies", "name": "certifi / charset-normalizer / urllib3", "version": "2026.7.22 / 3.5.0 / 2.7.0", "role": "runtime bundled HTTP dependencies", "bundled": true,
+      "license": "MPL-2.0 / MIT / MIT", "evidence": ["installed distribution metadata"], "license_files": ["THIRD_PARTY_LICENSES/Python-Packages/certifi-LICENSE", "THIRD_PARTY_LICENSES/Python-Packages/charset-normalizer-LICENSE", "THIRD_PARTY_LICENSES/Python-Packages/urllib3-LICENSE.txt"], "status": "VERIFIED"
+    },
+    {
+      "id": "python-bidi", "name": "python-bidi", "version": "0.6.11", "role": "runtime bundled Python package", "bundled": true,
+      "license": "LGPL-3.0-or-later", "evidence": ["installed COPYING and COPYING.LESSER files"], "license_files": ["THIRD_PARTY_LICENSES/Python-Packages/python-bidi-COPYING", "THIRD_PARTY_LICENSES/Python-Packages/python-bidi-COPYING.LESSER", "THIRD_PARTY_LICENSES/Python-Packages/python-bidi-AUTHORS.rst"], "status": "VERIFIED"
+    },
+    {
+      "id": "olefile", "name": "olefile", "version": "0.47", "role": "runtime bundled Python package", "bundled": true,
+      "license": "BSD", "evidence": ["installed distribution metadata and LICENSE files"], "license_files": ["THIRD_PARTY_LICENSES/Python-Packages/olefile-LICENSE.txt"], "status": "VERIFIED"
+    },
+    {
+      "id": "setuptools", "name": "setuptools and vendored dependencies", "version": "84.0.0", "role": "runtime content collected by PyInstaller", "bundled": true,
+      "license": "MIT; vendored components have separate licenses", "evidence": ["installed distribution metadata and bundled vendored dist-info"], "license_files": ["THIRD_PARTY_LICENSES/Python-Packages/setuptools-LICENSE", "THIRD_PARTY_LICENSES/Python-Packages/setuptools-vendored/README.txt"], "status": "REVIEW REQUIRED"
+    },
+    {
+      "id": "qwen-model", "name": "Qwen3-VL-8B-Instruct-GGUF (Unsloth conversion)", "version": "Q4_K_M plus mmproj", "role": "runtime downloaded model; not bundled in one-dir", "bundled": false,
+      "license": "Apache-2.0 as declared by the model repository", "evidence": ["https://huggingface.co/unsloth/Qwen3-VL-8B-Instruct-GGUF", "src/ai/runtime_profile.py"], "license_files": [], "status": "REVIEW REQUIRED"
+    },
+    {
+      "id": "pyinstaller", "name": "PyInstaller", "version": "6.22.2", "role": "build-only tool; bootloader incorporated under upstream exception", "bundled": false,
+      "license": "GPL-2.0-or-later with a special exception", "evidence": ["installed distribution metadata", "https://pyinstaller.org/en/stable/license.html"], "license_files": [], "status": "VERIFIED"
+    },
+    {
+      "id": "pefile", "name": "pefile", "version": "2024.8.26", "role": "build/analysis-only", "bundled": false,
+      "license": "MIT", "evidence": ["installed distribution metadata"], "license_files": [], "status": "VERIFIED"
+    }
+  ]
+}
