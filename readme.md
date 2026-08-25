@@ -1,4 +1,48 @@
-# 클래스별 기능 정리
+# Clasq
+
+Clasq는 로컬 AI를 이용해 파일을 검색하고, 정리 계획을 미리 확인한 뒤 안전하게 적용할 수 있는 Windows 데스크톱 애플리케이션입니다.
+
+## 다운로드 및 설치
+
+최신 점검용 빌드는 GitHub Releases에서 받을 수 있습니다.
+
+- [Clasq v1.0.0 Release 페이지](https://github.com/Jackkang790/Clasq/releases/tag/v1.0.0)
+- [Clasq_Setup_1.0.0.exe 직접 다운로드](https://github.com/Jackkang790/Clasq/releases/download/v1.0.0/Clasq_Setup_1.0.0.exe)
+- [SHA-256 체크섬](https://github.com/Jackkang790/Clasq/releases/download/v1.0.0/Clasq_Setup_1.0.0.exe.sha256.txt)
+
+설치파일을 다운로드해 실행하면 됩니다. Python, pip, PySide6, Docker, WSL, llama.cpp, FFmpeg는 별도로 설치할 필요가 없습니다.
+
+> 현재 v1.0.0은 점검용 prerelease이며 production code signing이 적용되지 않았습니다. Windows SmartScreen 또는 보안 경고가 표시될 수 있습니다.
+
+## 지원 환경
+
+- Windows x64
+- NVIDIA GPU
+- 로컬 AI 실행
+
+## AI 모델
+
+AI 모델은 설치파일에 포함되어 있지 않습니다. 모델이 없는 PC에서는 처음 AI 기능을 사용할 때 약 6.2GB 다운로드 안내가 표시되며, 사용자가 동의한 경우에만 다운로드합니다.
+
+다운로드된 모델은 로컬 캐시에 보관되므로 유효한 캐시가 있으면 다시 다운로드하지 않습니다.
+
+## 주요 기능
+
+- 자연어 및 메타데이터 기반 파일 검색
+- Analyze → Plan → Preview → Apply 순서의 안전한 파일 정리
+- 충돌 방지, 명시적 승인, 실행 취소 및 영구 이력
+- 저장 목록 편집, 선택 삭제 및 AI 태깅
+- 로컬 Qwen 모델과 앱 소유 llama-server lifecycle
+
+## 설치파일 무결성
+
+`Clasq_Setup_1.0.0.exe`의 SHA-256:
+
+```text
+EB6354B1EF522695746AD0F89385094D299A105B688600F9005A87641B731882
+```
+
+## 개발 참고: 클래스별 기능 정리
 
 ## 진입점 / 공통
 
