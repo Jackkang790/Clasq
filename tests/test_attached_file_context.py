@@ -23,6 +23,40 @@ class _Core:
 
 
 class AttachedFileContextTests(unittest.TestCase):
+    def test_attachment_error_clears_context_and_explains_recovery(self):
+        view = SearchView.__new__(SearchView)
+        view._attached_file_path = "unsupported.bin"
+        view._attached_analysis = {"stale": True}
+        view._ai_services = object()
+        messages = []
+        view.hide_loading = lambda: None
+        view.add_message = lambda message, **kwargs: messages.append((message, kwargs))
+
+        view._on_attachment_error("지원하지 않는 파일 형식")
+
+        self.assertIsNone(view._attached_file_path)
+        self.assertIsNone(view._attached_analysis)
+        self.assertIsNone(view._ai_services)
+        self.assertIn("일반 검색으로 돌아갑니다", messages[0][0])
+
+    def test_folder_analysis_summary_uses_user_facing_partial_failure_message(self):
+        message = SearchView._format_file_analysis_summary({
+            "total": 40,
+            "success": 37,
+            "failed": [{"reason": "unsupported"}] * 3,
+        })
+
+        self.assertIn("40개 파일 중 37개를 처리했고", message)
+        self.assertIn("폴더 분석을 마쳤습니다", message)
+        self.assertIn("3개는 처리하지 못했습니다", message)
+        self.assertIn("일반 검색으로 돌아갑니다", message)
+
+    def test_single_attachment_summary_explains_followup(self):
+        self.assertEqual(
+            SearchView._format_file_analysis_summary({"total": 1, "success": 1, "failed": []}),
+            "파일 분석을 마쳤습니다. 이 파일에 대해 이어서 질문할 수 있습니다.",
+        )
+
     def test_worker_preserves_successful_analysis_result(self):
         with tempfile.TemporaryDirectory() as tmp:
             video = Path(tmp) / "demo.mp4"

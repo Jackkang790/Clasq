@@ -311,17 +311,14 @@ class SearchView(QWidget):
         self.add_message(f"'{file_path}' 파일을 분석 중입니다...", is_user=False)
         self._file_worker = FolderScanAndTagWorker([file_path], self.core)
         self._file_worker.finished.connect(self._on_file_analyzed)
-        self._file_worker.error.connect(self._on_query_error)
+        self._file_worker.error.connect(self._on_attachment_error)
         self._file_worker.start()
 
     def _on_file_analyzed(self, summary):
         if self.refresh_manager:
             self.refresh_manager.refresh()
-        self.add_message(
-            f"파일 분석 완료: 성공 {summary.get('success', 0)}개, 실패 {len(summary.get('failed', []))}개",
-            is_user=False,
-        )
         results = summary.get("results", [])
+        self.add_message(self._format_file_analysis_summary(summary), is_user=False)
         if len(results) == 1:
             item = results[0]
             self._attached_file_path = item.get("file_path") or self._attached_file_path
@@ -329,6 +326,24 @@ class SearchView(QWidget):
             self.add_message(self._format_attached_analysis(self._attached_analysis), is_user=False,
                              kind="result")
             self._add_attachment_context_controls()
+        else:
+            self._clear_attachment_context()
+
+    @staticmethod
+    def _format_file_analysis_summary(summary):
+        total = int(summary.get("total", 0) or 0)
+        success = int(summary.get("success", 0) or 0)
+        failed = len(summary.get("failed", []) or [])
+        if total == 1 and success == 1:
+            return "파일 분석을 마쳤습니다. 이 파일에 대해 이어서 질문할 수 있습니다."
+        if total == 1:
+            return "파일을 분석하지 못했습니다. 첨부 분석을 종료하고 일반 검색으로 돌아갑니다."
+        if failed:
+            return (
+                f"폴더 분석을 마쳤습니다. {total}개 파일 중 {success}개를 처리했고 "
+                f"{failed}개는 처리하지 못했습니다. 일반 검색으로 돌아갑니다."
+            )
+        return f"폴더 분석을 마쳤습니다. {success}개 파일을 처리했습니다."
 
     @staticmethod
     def _format_attached_analysis(result):
@@ -380,7 +395,7 @@ class SearchView(QWidget):
             user_prompt=query, parent=self,
         )
         self._attached_worker.succeeded.connect(self._on_attached_answer)
-        self._attached_worker.failed.connect(self._on_query_error)
+        self._attached_worker.failed.connect(self._on_attachment_error)
         self._attached_worker.start()
 
     def _on_attached_answer(self, answer):
@@ -395,14 +410,28 @@ class SearchView(QWidget):
             "이 파일 그만", "새 대화", "새 대화 시작",
         }
 
-    def _end_attachment_context(self):
+    def _clear_attachment_context(self):
         had_context = bool(self._attached_file_path)
         self._attached_file_path = None
         self._attached_analysis = None
         self._ai_services = None
+        return had_context
+
+    def _end_attachment_context(self):
+        had_context = self._clear_attachment_context()
         if had_context:
             self.add_message("첨부 파일 분석 모드를 종료했습니다. 이제 일반 검색과 대화를 사용할 수 있습니다.",
                              is_user=False)
+
+    def _on_attachment_error(self, message):
+        self.hide_loading()
+        self._clear_attachment_context()
+        self.add_message(
+            f"첨부 파일 분석 중 오류가 발생했습니다: {message}\n"
+            "첨부 분석을 종료하고 일반 검색으로 돌아갑니다.",
+            is_user=False,
+            kind="error",
+        )
 
     def _add_attachment_context_controls(self):
         row = QHBoxLayout()

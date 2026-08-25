@@ -181,8 +181,7 @@ class SearchEngine:
                 return matches[:self.result_limit]
             indexed_paths = conn.execute(
                 """SELECT fti.file_path FROM file_text_index fti
-                   WHERE fti.extract_status='success'
-                     AND NOT EXISTS (SELECT 1 FROM files f WHERE f.file_path=fti.file_path)"""
+                   WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.file_path=fti.file_path)"""
             ).fetchall()
             indexed_rows = [
                 (None, os.path.basename(path), path, "", "")
@@ -202,7 +201,13 @@ class SearchEngine:
         }
         conn = sqlite3.connect(self.db_path, timeout=30)
         try:
-            names = [row[0] or "" for row in conn.execute("SELECT file_name FROM files")]
+            conn.create_function("path_basename", 1, lambda value: os.path.basename(value or ""))
+            names = [row[0] or "" for row in conn.execute(
+                """SELECT file_name FROM files
+                   UNION ALL
+                   SELECT path_basename(fti.file_path) FROM file_text_index fti
+                   WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.file_path=fti.file_path)"""
+            )]
         finally:
             conn.close()
         counts = {label: sum(os.path.splitext(name)[1].casefold() in exts for name in names)
@@ -228,8 +233,7 @@ class SearchEngine:
             SELECT NULL, path_basename(fti.file_path), fti.file_path, '', '',
                    NULL, fti.file_mtime_ns, fti.updated_at, fti.updated_at
             FROM file_text_index fti
-            WHERE fti.extract_status='success'
-              AND NOT EXISTS (SELECT 1 FROM files f WHERE f.file_path=fti.file_path)
+            WHERE NOT EXISTS (SELECT 1 FROM files f WHERE f.file_path=fti.file_path)
         )
         SELECT id, file_name, file_path, ai_comment, category FROM candidates WHERE 1=1"""
         params = []

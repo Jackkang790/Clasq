@@ -18,6 +18,7 @@ from typing import Callable, Iterable, Optional
 from .db_manager import FileRegistryManager
 from .file_pipeline import TextExtractor
 from .core import DEFAULT_EXCLUDED_DIRECTORIES
+from .config import SUPPORTED_EXTENSIONS as APPLICATION_SUPPORTED_EXTENSIONS
 
 
 class LocalTextIndexer:
@@ -29,7 +30,10 @@ class LocalTextIndexer:
         ".csv", ".json", ".xml", ".yaml", ".yml",
     }
     # .ppt 는 파싱 불가 — 파일명/경로 검색 전용으로 discover_legacy_ppt() 사용
-    KNOWN_EXTENSIONS = SUPPORTED_EXTENSIONS | {".ppt"}
+    # Keep a metadata row for every file type that Clasq accepts.  Text can only
+    # be extracted from ``SUPPORTED_EXTENSIONS``; the remaining types are stored
+    # as ``unsupported`` so filename/type search still sees images, videos, etc.
+    KNOWN_EXTENSIONS = set(APPLICATION_SUPPORTED_EXTENSIONS) | {".ppt"}
 
     EXTRACTOR_TYPES = {
         ".pptx": "python-pptx", ".pdf": "pypdf", ".docx": "python-docx",

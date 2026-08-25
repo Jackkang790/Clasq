@@ -58,13 +58,33 @@ class TestLocalTextIndexerNewFile(unittest.TestCase):
         self.assertEqual(rows[p]["extract_status"], "success")
         self.assertIn("Hello", rows[p]["extracted_text"])
 
-    def test_unsupported_extension_not_indexed(self):
+    def test_supported_image_is_indexed_as_metadata_only(self):
         p = str(Path(self.tmp) / "image.jpg")
         Path(p).write_bytes(b"\xff\xd8\xff")
         indexer = LocalTextIndexer(self.db)
         stats = indexer.synchronize([p])
-        self.assertEqual(stats["indexed"], 0)
-        self.assertNotIn(p, _indexed(self.db))
+        self.assertEqual(stats["indexed"], 1)
+        self.assertEqual(stats["unsupported"], 1)
+        self.assertEqual(_indexed(self.db)[p]["extract_status"], "unsupported")
+
+    def test_supported_video_is_searchable_by_filename_and_type(self):
+        from src.utils.search_engine import SearchEngine
+
+        p = str(Path(self.tmp) / "테스트 영상.mp4")
+        Path(p).write_bytes(b"synthetic-video")
+        indexer = LocalTextIndexer(self.db)
+        stats = indexer.synchronize([p])
+
+        self.assertEqual(stats["unsupported"], 1)
+        engine = SearchEngine(db_path=self.db)
+        filename_result = engine.process_query_result({
+            "@TYPE": "search", "query_keywords": ["테스트 영상"]
+        })
+        type_result = engine.process_query_result({
+            "@TYPE": "search", "query_keywords": [], "target_extension": [".mp4"]
+        })
+        self.assertEqual(filename_result["data"][0][1], "테스트 영상.mp4")
+        self.assertEqual(type_result["data"][0][1], "테스트 영상.mp4")
 
     def test_unchanged_file_skipped_on_second_run(self):
         p = self._make_txt("doc2.txt", "Incremental test content.")

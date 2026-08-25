@@ -172,6 +172,23 @@ class SearchIntentRetrievalFixTests(unittest.TestCase):
         rows = self.engine.search_files_smart([], [".mp4"])[0]
         self.assertIn("indexed-video.mp4", [row[1] for row in rows])
 
+    def test_metadata_only_unsupported_index_row_is_searchable(self):
+        path = str(self.root / "metadata-only-video.mp4")
+        conn = sqlite3.connect(self.db)
+        try:
+            conn.execute(
+                "INSERT INTO file_text_index(file_path,extracted_text,extract_status,extractor_type) VALUES(?,?,?,?)",
+                (path, "", "unsupported", "unknown"),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.assertEqual(self.engine.probe_filename("metadata-only-video")[0][1],
+                         "metadata-only-video.mp4")
+        rows = self.engine.search_files_smart([], [".mp4"])[0]
+        self.assertIn("metadata-only-video.mp4", [row[1] for row in rows])
+
 
 if __name__ == "__main__":
     unittest.main()
