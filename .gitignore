@@ -21,6 +21,7 @@ assets/preset.json
 /build-*/
 /dist/
 /dist-*/
+/release-*/
 /dist-*-inventory.csv
 /dist-*-inventory.json
 
