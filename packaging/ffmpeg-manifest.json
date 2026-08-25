@@ -1,0 +1,12 @@
+{
+  "name": "ffmpeg",
+  "filename": "ffmpeg.exe",
+  "version": "8.1.2-full_build-www.gyan.dev",
+  "architecture": "windows-x86_64",
+  "size": 242496512,
+  "sha256": "ad8f211bc894755e0061c55ab280ae00e8d3d4f15a8cc4372b24cfa247b5942e",
+  "provider": "gyan.dev",
+  "provider_url": "https://www.gyan.dev/ffmpeg/builds/",
+  "build_type": "full static",
+  "license_facts": ["--enable-gpl", "--enable-version3", "--enable-static"]
+}

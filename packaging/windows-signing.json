@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "digest_algorithm": "SHA256",
+  "timestamp": {
+    "required_for_release": true,
+    "protocol": "RFC3161",
+    "digest_algorithm": "SHA256",
+    "url_environment": "CLASQ_SIGN_TIMESTAMP_URL"
+  },
+  "signtool": {
+    "override_environment": "CLASQ_SIGNTOOL_EXE",
+    "allow_path_lookup": false
+  },
+  "credentials": {
+    "preferred": "windows-store-thumbprint",
+    "thumbprint_environment": "CLASQ_SIGN_CERT_THUMBPRINT",
+    "pfx_path_environment": "CLASQ_SIGN_PFX",
+    "pfx_password_environment": "CLASQ_SIGN_PFX_PASSWORD"
+  },
+  "owned_targets": [
+    {"id": "application", "relative_path": "Clasq.exe", "phase": 10},
+    {"id": "installer", "relative_path": "Clasq_Setup_*.exe", "phase": 30}
+  ],
+  "preserve_unsigned_or_upstream": [
+    "_internal/runtime/ffmpeg.exe",
+    "_internal/runtime/llama-server.exe",
+    "_internal/runtime/*.dll",
+    "_internal/PySide6/**",
+    "_internal/*.dll",
+    "_internal/*.pyd"
+  ]
+}

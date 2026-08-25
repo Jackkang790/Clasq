@@ -1,7 +1,57 @@
-/.venv
-/.vscode
-
+# Python / local tooling
+/.venv/
+/venv/
+/.vscode/
+/.idea/
 __pycache__/
-*.pyc
+*.py[cod]
+/.pytest_cache/
+.coverage
+/htmlcov/
+
+# Local application state
 assets/preset.json
 *.db
+/.tmp/
+/tmp*/
+
+# Build / PyInstaller output
+/.build/
+/build/
+/build-*/
+/dist/
+/dist-*/
+/dist-*-inventory.csv
+/dist-*-inventory.json
+
+# Runtime logs and diagnostic exports
+/logs/
+*.log
+Clasq-Diagnostics-*.zip
+
+# Model cache and incomplete downloads
+/models/
+/model-cache/
+*.gguf
+*.part
+
+# Reproducible benchmark execution output and local scratch drivers
+/benchmarks/_e2e_test.py
+/benchmarks/_quality_compare.py
+/benchmarks/_test*.py
+/benchmarks/_video_test.py
+/benchmarks/*_results.json
+/benchmarks/*_evaluation.json
+/benchmarks/search_ground_truth_review.csv
+/benchmarks/vram_benchmark_result.json
+
+# Code-signing credentials are external release secrets, never repository data.
+*.pfx
+*.p12
+*.pvk
+*.snk
+*.key
+/signing-secrets/
+.env
+.env.*
+!.env.example
