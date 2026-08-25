@@ -113,6 +113,7 @@ class TitleBar(QWidget):
 
         # ---- 설정 톱니바퀴 (클릭 시 바로 설정 뷰로 이동) ----
         self.settings_btn = _AnimatedIconButton("setting.svg")
+        self.settings_btn.setToolTip("설정")
         self.settings_btn.clicked.connect(self.settingsSelected.emit)
         layout.addWidget(self.settings_btn)
 
@@ -124,10 +125,12 @@ class TitleBar(QWidget):
 
         # ---- 뒤로 / 앞으로 ----
         self.back_btn = _AnimatedIconButton("arrow_back.svg")
+        self.back_btn.setToolTip("뒤로")
         self.back_btn.setEnabled(False)
         self.back_btn.clicked.connect(self.backClicked.emit)
 
         self.forward_btn = _AnimatedIconButton("arrow_forward.svg")
+        self.forward_btn.setToolTip("앞으로")
         self.forward_btn.setEnabled(False)
         self.forward_btn.clicked.connect(self.forwardClicked.emit)
 
@@ -142,12 +145,15 @@ class TitleBar(QWidget):
 
         # ---- 창 컨트롤 ----
         self.min_btn = _AnimatedIconButton("minimize.svg")
+        self.min_btn.setToolTip("최소화")
         self.min_btn.clicked.connect(self.minimizeClicked.emit)
 
         self.max_btn = _AnimatedIconButton("zoom_in.svg")
+        self.max_btn.setToolTip("최대화")
         self.max_btn.clicked.connect(self.maximizeClicked.emit)
 
         self.close_btn = _AnimatedIconButton("close.svg", hover_color="#FDEDEC")
+        self.close_btn.setToolTip("닫기")
         self.close_btn.clicked.connect(self.closeClicked.emit)
 
         layout.addWidget(self.min_btn)

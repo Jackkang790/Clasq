@@ -334,8 +334,6 @@ class _GroupedScreen(QWidget):
         title.setObjectName("screenTitle")
         header_row.addWidget(title)
         header_row.addStretch()
-        header_row.addWidget(_make_btn("경로 추가"))
-        header_row.addWidget(_make_btn("자동정리", primary=True))
         root.addLayout(header_row)
 
         scroll = QScrollArea()

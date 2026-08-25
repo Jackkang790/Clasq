@@ -8,8 +8,7 @@ from PySide6.QtWidgets import (
     QInputDialog, QMessageBox
 )
 from PySide6.QtCore import Qt, Property, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QIcon, QPainter, QColor
-from PySide6.QtCore import QSize
+from PySide6.QtGui import QPainter, QColor
 from PySide6.QtWidgets import QFileDialog
 from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
@@ -145,7 +144,6 @@ class SettingsView(QWidget):
             border-color: #EBEBEE;
         }
 
-        QPushButton#backbtn { background: transparent; border: none; }
 
         /* 그룹박스 & 테이블 레이아웃 */
         QGroupBox {
@@ -225,13 +223,6 @@ class SettingsView(QWidget):
         tablelayout = QVBoxLayout()
         btnlayout = QHBoxLayout()
 
-        # 상단 요소
-        backbtn = QPushButton()
-        backbtn.setIcon(QIcon(str(ICONS_DIR / "home.svg")))
-        backbtn.setIconSize(QSize(24, 24))
-        backbtn.setObjectName("backbtn")
-        backbtn.clicked.connect(self.go_search)
-
         title = QLabel('파일경로 지정')
         title.setObjectName("title")
 
@@ -299,7 +290,6 @@ class SettingsView(QWidget):
         # 레이아웃 조립
         header.addWidget(title)
         header.addStretch()
-        header.addWidget(backbtn)
 
         optionlayout.addWidget(savebtn)
         optionlayout.addWidget(reloadbtn)

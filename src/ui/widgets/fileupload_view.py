@@ -27,6 +27,7 @@ class FileUploadView(QWidget):
 
         # 1. 파일 첨부 (+) 버튼
         self.plus_btn = QPushButton("+")
+        self.plus_btn.setToolTip("파일 첨부")
         self.plus_btn.setFixedSize(36, 36)
         self.plus_btn.setStyleSheet("""
             QPushButton {
@@ -60,6 +61,7 @@ class FileUploadView(QWidget):
 
         # 3. 전송 버튼
         self.send_btn = QPushButton("↑")
+        self.send_btn.setToolTip("검색 보내기")
         self.send_btn.setProperty("class", "sendBtn")
         self.send_btn.setFixedSize(36, 36)
         self.send_btn.clicked.connect(self.submit_message)
