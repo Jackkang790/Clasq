@@ -148,52 +148,111 @@ class _GroupedFolderCard(QFrame):
 
 
 class _HistoryDialog(QDialog):
-    """최근 파일 정리 이력을 표시하고 Undo를 제공하는 최소 다이얼로그."""
+    """최근 파일 정리 이력을 표시하고 Undo를 제공하는 다이얼로그."""
 
     undoRequested = Signal(str)  # operation_id
+
+    _DIALOG_QSS = """
+        QDialog { background: #FFFFFF; }
+        QLabel { color: #2D2D3A; font-size: 13px; }
+        QLabel#dlgTitle { font-size: 16px; font-weight: 700; color: #2D2D3A; }
+        QLabel#dlgDesc  { font-size: 12px; color: #8A8CA5; }
+        QTableWidget {
+            background: #FFFFFF; border: 1px solid #E4E6EF;
+            border-radius: 10px; gridline-color: #F0F0F7;
+            font-size: 13px; color: #2D2D3A; outline: 0;
+            alternate-background-color: #F9F9FC;
+            selection-background-color: #EFEBFF;
+        }
+        QTableWidget::item { padding: 0 10px; }
+        QHeaderView::section {
+            background: #F5F6FA; color: #8A8CA5; font-size: 12px;
+            font-weight: 600; border: none; border-bottom: 1px solid #E4E6EF;
+            padding: 6px 10px;
+        }
+        QPushButton#undoBtn {
+            background: #6C5CE7; color: white; border: none;
+            border-radius: 6px; font-weight: 600; font-size: 12px;
+        }
+        QPushButton#undoBtn:hover { background: #5A4BD1; }
+        QPushButton#closeBtn {
+            background: #F5F6FA; color: #2D2D3A; border: 1px solid #E4E6EF;
+            border-radius: 8px; padding: 8px 24px; font-size: 13px; font-weight: 600;
+        }
+        QPushButton#closeBtn:hover { background: #EFEBFF; color: #6C5CE7; }
+    """
 
     def __init__(self, operations: list, parent=None):
         super().__init__(parent)
         self.setWindowTitle("정리 이력")
-        self.setMinimumWidth(640)
-        self.setMinimumHeight(340)
+        self.setMinimumWidth(660)
+        self.setMinimumHeight(360)
+        self.setStyleSheet(self._DIALOG_QSS)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(14)
 
-        info = QLabel("최근 파일 정리 이력입니다. Undo로 이동된 파일을 원위치로 되돌릴 수 있습니다.")
-        info.setWordWrap(True)
-        layout.addWidget(info)
+        title = QLabel("정리 이력")
+        title.setObjectName("dlgTitle")
+        layout.addWidget(title)
+
+        desc = QLabel("Undo를 누르면 이동된 파일이 원위치로 돌아갑니다.")
+        desc.setObjectName("dlgDesc")
+        layout.addWidget(desc)
 
         table = QTableWidget(len(operations), 4)
         table.setHorizontalHeaderLabels(["날짜/시간", "이동 파일", "상태", "동작"])
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents)
         table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Stretch)
+        table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        table.horizontalHeader().setSectionResizeMode(3, QHeaderView.Fixed)
+        table.setColumnWidth(3, 90)
         table.verticalHeader().setVisible(False)
+        table.verticalHeader().setDefaultSectionSize(48)
         table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setAlternatingRowColors(True)
+        table.setShowGrid(False)
 
         for row, op in enumerate(operations):
-            table.setItem(row, 0, QTableWidgetItem((op["applied_at"] or "")[:19]))
-            table.setItem(row, 1, QTableWidgetItem(f"{op['file_count']}개"))
+            for col, text in enumerate([
+                (op["applied_at"] or "")[:19],
+                f"{op['file_count']}개",
+                "정리 완료" if (op["applied_count"] or 0) > 0 else "되돌림 완료",
+            ]):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+                table.setItem(row, col, item)
+
             can_undo = (op["applied_count"] or 0) > 0
-            table.setItem(row, 2, QTableWidgetItem("정리 완료" if can_undo else "되돌림 완료"))
             if can_undo:
                 btn = QPushButton("Undo")
+                btn.setObjectName("undoBtn")
+                btn.setFixedHeight(32)
                 btn.setCursor(Qt.PointingHandCursor)
                 oid = op["operation_id"]
                 btn.clicked.connect(lambda checked, o=oid: self._request_undo(o))
-                table.setCellWidget(row, 3, btn)
+                container = QWidget()
+                cl = QHBoxLayout(container)
+                cl.setContentsMargins(8, 8, 8, 8)
+                cl.addWidget(btn)
+                table.setCellWidget(row, 3, container)
             else:
-                table.setItem(row, 3, QTableWidgetItem("—"))
+                item = QTableWidgetItem("—")
+                item.setTextAlignment(Qt.AlignCenter)
+                table.setItem(row, 3, item)
 
         layout.addWidget(table, stretch=1)
 
+        bottom = QHBoxLayout()
+        bottom.addStretch()
         close_btn = QPushButton("닫기")
+        close_btn.setObjectName("closeBtn")
+        close_btn.setCursor(Qt.PointingHandCursor)
         close_btn.clicked.connect(self.accept)
-        layout.addWidget(close_btn)
+        bottom.addWidget(close_btn)
+        layout.addLayout(bottom)
 
     def _request_undo(self, operation_id: str):
         self.undoRequested.emit(operation_id)
@@ -1452,17 +1511,58 @@ class OrganizeView(QWidget):
             QLineEdit, QPushButton, QLabel, QAbstractItemView,
         )
 
+        _DLG_QSS = """
+            QDialog { background: #FFFFFF; }
+            QLabel { color: #2D2D3A; font-size: 13px; }
+            QLabel#dlgTitle { font-size: 16px; font-weight: 700; }
+            QLabel#dlgDesc  { font-size: 12px; color: #8A8CA5; }
+            QLabel#logLabel { font-size: 12px; color: #6C5CE7; }
+            QListWidget {
+                background: #F9F9FC; border: 1px solid #E4E6EF;
+                border-radius: 8px; font-size: 13px; outline: 0;
+            }
+            QListWidget::item { padding: 6px 10px; border-radius: 4px; }
+            QListWidget::item:selected { background: #EFEBFF; color: #2D2D3A; }
+            QListWidget::item:hover { background: #F5F0FF; }
+            QLineEdit {
+                background: #F5F6FA; border: 1px solid #E4E6EF;
+                border-radius: 8px; padding: 0 12px; font-size: 13px; color: #2D2D3A;
+            }
+            QLineEdit:focus { border: 1px solid #6C5CE7; background: #FFFFFF; }
+            QPushButton#applyBtn {
+                background: #6C5CE7; color: white; border: none;
+                border-radius: 8px; font-weight: 600; font-size: 13px;
+            }
+            QPushButton#applyBtn:hover { background: #5A4BD1; }
+            QPushButton#okBtn {
+                background: #6C5CE7; color: white; border: none;
+                border-radius: 8px; padding: 8px 24px; font-weight: 600; font-size: 13px;
+            }
+            QPushButton#okBtn:hover { background: #5A4BD1; }
+            QPushButton#cancelBtn {
+                background: #F5F6FA; color: #2D2D3A; border: 1px solid #E4E6EF;
+                border-radius: 8px; padding: 8px 24px; font-size: 13px; font-weight: 600;
+            }
+            QPushButton#cancelBtn:hover { background: #EFEBFF; color: #6C5CE7; }
+        """
+
         dlg = QDialog(self)
         dlg.setWindowTitle("수동 태그 지정")
-        dlg.setMinimumSize(600, 500)
+        dlg.setMinimumSize(620, 520)
+        dlg.setStyleSheet(_DLG_QSS)
         root = QVBoxLayout(dlg)
-        root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(12)
+        root.setContentsMargins(24, 20, 24, 20)
+        root.setSpacing(14)
+
+        title_lbl = QLabel("수동 태그 지정")
+        title_lbl.setObjectName("dlgTitle")
+        root.addWidget(title_lbl)
 
         hint = QLabel(
             "파일을 선택(Ctrl/Shift로 다중 선택)한 뒤 태그를 입력하고 '적용'을 누르세요.\n"
             "태그 이름으로 정리 폴더가 생성됩니다. 다른 태그로 반복 적용할 수 있습니다."
         )
+        hint.setObjectName("dlgDesc")
         hint.setWordWrap(True)
         root.addWidget(hint)
 
@@ -1501,8 +1601,87 @@ class OrganizeView(QWidget):
             item = QListWidgetItem(label)
             # UserRole: (file_id, exact_db_path) — 없으면 fallback으로 스캔 경로
             item.setData(Qt.UserRole, db_entry if db_entry else (None, p))
+            item.setToolTip(p)
             file_list.addItem(item)
         root.addWidget(file_list, stretch=1)
+
+        # 파일 열기 / 삭제 액션 행
+        action_row = QHBoxLayout()
+        open_btn = QPushButton("파일 열기")
+        open_btn.setObjectName("cancelBtn")
+        open_btn.setFixedHeight(32)
+        open_btn.setToolTip("선택한 파일을 기본 앱으로 엽니다 (더블클릭도 가능)")
+        delete_btn = QPushButton("선택 파일 삭제")
+        delete_btn.setFixedHeight(32)
+        delete_btn.setStyleSheet(
+            "QPushButton { background:#EF4444; color:white; border:none; "
+            "border-radius:8px; font-weight:600; font-size:13px; }"
+            "QPushButton:hover { background:#DC2626; }"
+        )
+        action_row.addWidget(open_btn)
+        action_row.addWidget(delete_btn)
+        action_row.addStretch()
+        root.addLayout(action_row)
+
+        def _open_selected():
+            selected = file_list.selectedItems()
+            if not selected:
+                return
+            _, path = selected[0].data(Qt.UserRole)
+            try:
+                os.startfile(path)
+            except Exception as e:
+                QMessageBox.warning(dlg, "파일 열기 실패", str(e))
+
+        def _delete_selected():
+            selected = file_list.selectedItems()
+            if not selected:
+                QMessageBox.warning(dlg, "선택 필요", "삭제할 파일을 선택해 주세요.")
+                return
+            names = "\n".join(f"  • {item.text().split('  →')[0]}" for item in selected[:5])
+            if len(selected) > 5:
+                names += f"\n  ... 외 {len(selected)-5}개"
+            reply = QMessageBox.question(
+                dlg, "파일 삭제 확인",
+                f"선택한 {len(selected)}개 파일을 삭제하시겠습니까?\n\n{names}\n\n"
+                "이 작업은 되돌릴 수 없습니다.",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+            import time as _t
+            conn2 = _sqlite3.connect(db_path, timeout=10)
+            del_failed = []
+            for item in selected:
+                fid, path = item.data(Qt.UserRole)
+                try:
+                    if os.path.isfile(path):
+                        os.remove(path)
+                    if fid is not None:
+                        conn2.execute("DELETE FROM files WHERE id=?", (fid,))
+                    else:
+                        conn2.execute("DELETE FROM files WHERE file_path=?", (path,))
+                    # 인덱스 정리
+                    for tbl in ("file_text_index", "file_fingerprint_cache"):
+                        conn2.execute(f"DELETE FROM {tbl} WHERE file_path=?", (path,))
+                    # _last_untagged_files에서 제거
+                    self._last_untagged_files = [
+                        p for p in self._last_untagged_files if p != path
+                    ]
+                    row = file_list.row(item)
+                    file_list.takeItem(row)
+                    if path in applied:
+                        del applied[path]
+                except Exception as e:
+                    del_failed.append(f"{Path(path).name}: {e}")
+            conn2.commit()
+            conn2.close()
+            if del_failed:
+                QMessageBox.warning(dlg, "일부 삭제 실패", "\n".join(del_failed[:5]))
+
+        open_btn.clicked.connect(_open_selected)
+        file_list.itemDoubleClicked.connect(lambda item: _open_selected())
+        delete_btn.clicked.connect(_delete_selected)
 
         # 태그 입력 + 적용 행
         tag_row = QHBoxLayout()
@@ -1511,20 +1690,17 @@ class OrganizeView(QWidget):
         tag_input.setPlaceholderText("태그 입력 (예: 업무, 개인, 프로젝트)")
         tag_input.setFixedHeight(36)
         apply_btn = QPushButton("선택 파일에 적용")
+        apply_btn.setObjectName("applyBtn")
         apply_btn.setFixedHeight(36)
-        apply_btn.setFixedWidth(140)
-        apply_btn.setStyleSheet(
-            "QPushButton { background:#6C5CE7; color:white; border-radius:6px; "
-            "font-weight:bold; } QPushButton:hover { background:#5B4BC4; }"
-        )
+        apply_btn.setFixedWidth(150)
         tag_row.addWidget(tag_input, stretch=1)
         tag_row.addWidget(apply_btn)
         root.addLayout(tag_row)
 
         # 적용 이력 표시
         self._manual_tag_log = QLabel("")
+        self._manual_tag_log.setObjectName("logLabel")
         self._manual_tag_log.setWordWrap(True)
-        self._manual_tag_log.setStyleSheet("color:#555; font-size:12px;")
         root.addWidget(self._manual_tag_log)
 
         # applied: db_path → (file_id_or_None, tag)
@@ -1559,11 +1735,12 @@ class OrganizeView(QWidget):
         btn_row = QHBoxLayout()
         btn_row.addStretch()
         cancel_btn = QPushButton("취소")
-        cancel_btn.setMinimumHeight(34)
+        cancel_btn.setObjectName("cancelBtn")
+        cancel_btn.setFixedHeight(36)
         cancel_btn.clicked.connect(dlg.reject)
         ok_btn = QPushButton("정리 목록에 반영")
-        ok_btn.setMinimumHeight(34)
-        ok_btn.setStyleSheet(apply_btn.styleSheet())
+        ok_btn.setObjectName("okBtn")
+        ok_btn.setFixedHeight(36)
         ok_btn.clicked.connect(dlg.accept)
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(ok_btn)
