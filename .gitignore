@@ -27,6 +27,7 @@ assets/preset.json
 
 # Runtime logs and diagnostic exports
 /logs/
+/log_zips/
 *.log
 Clasq-Diagnostics-*.zip
 
