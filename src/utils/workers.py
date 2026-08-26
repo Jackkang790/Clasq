@@ -17,9 +17,7 @@ def estimate_analysis_eta(file_count: int, seconds_per_file: float | None = None
         low = file_count * seconds_per_file * 0.8
         high = file_count * seconds_per_file * 1.2
     else:
-        # Until this session has observations, use a broad local-AI range.
-        low = file_count * 5.0
-        high = file_count * 15.0
+        return "예상시간 계산 중 (첫 분석 완료 후 갱신)"
 
     def readable(seconds: float) -> str:
         if seconds < 60:

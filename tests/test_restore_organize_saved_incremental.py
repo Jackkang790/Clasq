@@ -123,6 +123,7 @@ class RestoreOrganizeSavedIncrementalTests(unittest.TestCase):
         self.assertIn("~", eta)
         self.assertTrue("초" in eta or "분" in eta)
         self.assertEqual(estimate_analysis_eta(0), "추가 분석 없음")
+        self.assertIn("계산 중", estimate_analysis_eta(20))
 
     def test_auto_organize_selects_destination_before_inventory(self):
         from src.ui.views.organize_view import OrganizeView
