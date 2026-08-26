@@ -14,8 +14,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from src.ui.widgets.progress_dialog import TaskProgressDialog
-from src.utils.workers import FolderScanAndTagWorker
 
 
 class SavedView(QWidget):
@@ -25,8 +23,6 @@ class SavedView(QWidget):
         self.core = core
         self.refresh_manager = refresh_manager
         self._original_rows = {}  # row -> (file_id, file_name, tags)
-        self._tagging_worker = None
-        self._tagging_dialog = None
         self.init_ui()
         self.load_data()
 
@@ -78,14 +74,8 @@ class SavedView(QWidget):
         """)
         self.delete_selected_btn.clicked.connect(self.on_delete_selected)
 
-        self.tag_untagged_btn = QPushButton("미태깅 전체 AI 태깅")
-        self.tag_untagged_btn.setFixedSize(160, 38)
-        self.tag_untagged_btn.setStyleSheet(self.edit_btn.styleSheet())
-        self.tag_untagged_btn.clicked.connect(self.on_tag_all_untagged)
-
         header_layout.addWidget(title_label)
         header_layout.addStretch()
-        header_layout.addWidget(self.tag_untagged_btn)
         header_layout.addWidget(self.delete_selected_btn)
         header_layout.addWidget(self.edit_btn)
         main_layout.addLayout(header_layout)
@@ -399,73 +389,3 @@ class SavedView(QWidget):
         else:
             QMessageBox.information(self, "완료", f"선택한 {len(records)}개 항목을 DB에서 삭제했습니다.")
 
-    def _untagged_file_paths(self):
-        """Return existing saved-list files whose tag field is empty."""
-        paths = []
-        for row in range(self.table.rowCount()):
-            tag_item = self.table.item(row, 1)
-            path_item = self.table.item(row, 2)
-            if path_item and not (tag_item.text().strip() if tag_item else ""):
-                path = path_item.text().strip()
-                if path and os.path.isfile(path):
-                    paths.append(path)
-        return paths
-
-    def on_tag_all_untagged(self):
-        """Explicitly AI-tag every currently untagged saved-list file."""
-        if self.core is None:
-            QMessageBox.warning(self, "AI 태깅", "DB에 연결되어 있지 않습니다.")
-            return
-        if self._tagging_worker and self._tagging_worker.isRunning():
-            QMessageBox.information(self, "AI 태깅", "이미 AI 태깅 작업이 진행 중입니다.")
-            return
-
-        paths = self._untagged_file_paths()
-        if not paths:
-            QMessageBox.information(self, "AI 태깅", "AI 태깅이 필요한 파일이 없습니다.")
-            return
-
-        reply = QMessageBox.question(
-            self,
-            "미태깅 파일 AI 태깅",
-            f"태그가 없는 {len(paths):,}개 파일을 AI로 분석해 태깅하시겠습니까?\n"
-            "이미 태그된 파일은 변경하지 않으며, 파일 이동은 수행하지 않습니다.",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
-
-        self._tagging_dialog = TaskProgressDialog(
-            "미태깅 파일 AI 태깅", "AI 분석을 준비하고 있습니다...", parent=self, unit="파일",
-        )
-        self._tagging_worker = FolderScanAndTagWorker(paths, self.core)
-        self._tagging_worker.progress.connect(self._tagging_dialog.setLabelText)
-        self._tagging_worker.fileProgress.connect(self._tagging_dialog.update_progress)
-        self._tagging_worker.finished.connect(self._on_bulk_tagging_finished)
-        self._tagging_worker.error.connect(self._on_bulk_tagging_error)
-        self._tagging_worker.start()
-        self._tagging_dialog.show()
-
-    def _close_tagging_dialog(self):
-        if self._tagging_dialog:
-            self._tagging_dialog.close()
-            self._tagging_dialog = None
-
-    def _on_bulk_tagging_finished(self, summary=None):
-        summary = summary or {}
-        self._close_tagging_dialog()
-        self.load_data()
-        self._refresh_database_views()
-        remaining = len(self._untagged_file_paths())
-        QMessageBox.information(
-            self,
-            "AI 태깅 완료",
-            f"성공 {summary.get('success', 0):,}개, "
-            f"실패 {len(summary.get('failed', [])):,}개, "
-            f"남은 미태깅 {remaining:,}개",
-        )
-
-    def _on_bulk_tagging_error(self, message):
-        self._close_tagging_dialog()
-        QMessageBox.critical(self, "AI 태깅 오류", str(message))

@@ -71,6 +71,11 @@ class FolderScanAndTagWorker(QThread):
         super().__init__()
         self.folder_paths = folder_paths
         self.core = core
+        self._stop_requested = False
+
+    def request_stop(self):
+        """현재 파일 처리 완료 후 루프를 중단한다."""
+        self._stop_requested = True
 
     def run(self):
         log.info("file scan and AI tagging started roots=%d", len(self.folder_paths))
@@ -101,12 +106,16 @@ class FolderScanAndTagWorker(QThread):
 
             succeeded, failures, results = 0, [], []
             for idx, file_path in enumerate(files_to_process, start=1):
+                if self._stop_requested:
+                    break
                 file_name = os.path.basename(file_path)
                 self.progress.emit(f"AI 분석 중 ({idx}/{total_count}): {file_name}")
                 self.fileProgress.emit(idx, total_count, file_name)
                 try:
                     result = self.core.process_file_upload(file_path)
-                    if result.get("status") == "SUCCESS":
+                    db_ok = result.get("db_result", {}).get("success", False)
+                    if db_ok:
+                        # AI 분석 성공 또는 확장자 기반 폴백 태그 저장 — 둘 다 성공으로 집계
                         succeeded += 1
                         results.append({"file_path": file_path, "result": result})
                     else:
@@ -886,6 +895,15 @@ class OrganizeUndoWorker(QThread):
 
                     undone.append({"moved_path": moved, "original_path": original, "id": rec_id})
 
+                    # 파일을 옮긴 후 빈 폴더 정리 (정리 시 생성된 디렉터리 제거)
+                    moved_dir = os.path.dirname(moved)
+                    while moved_dir and os.path.isdir(moved_dir):
+                        try:
+                            os.rmdir(moved_dir)
+                        except OSError:
+                            break
+                        moved_dir = os.path.dirname(moved_dir)
+
                 except Exception as exc:
                     failed.append({
                         "moved_path": moved, "original_path": original, "id": rec_id,
@@ -903,6 +921,7 @@ class OrganizeUndoWorker(QThread):
                     moved_p = u["moved_path"]
                     try:
                         if os.path.isfile(original_p) and not os.path.exists(moved_p):
+                            os.makedirs(os.path.dirname(moved_p), exist_ok=True)
                             _shutil.move(original_p, moved_p)
                             rolled_back.append({"original_path": original_p, "moved_path": moved_p, "success": True})
                             undone.remove(u)
@@ -1024,6 +1043,7 @@ class OrganizeUndoWorker(QThread):
                         try:
                             if not os.path.isfile(original_p) or os.path.exists(moved_p):
                                 raise OSError("DB 동기화 실패 rollback 경로 충돌 또는 파일 없음")
+                            os.makedirs(os.path.dirname(moved_p), exist_ok=True)
                             _shutil.move(original_p, moved_p)
                             rolled_back.append({
                                 "original_path": original_p, "moved_path": moved_p,

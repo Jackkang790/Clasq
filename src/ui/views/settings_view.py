@@ -749,6 +749,7 @@ class SettingsView(QWidget):
 
         self._tagging_dialog = TaskProgressDialog(
             "파일 태깅 중", "파일을 분석하고 있습니다...", parent=self, unit="파일",
+            cancellable=True,
         )
 
         self._tagging_worker = FolderScanAndTagWorker(paths, self.core)
@@ -756,6 +757,7 @@ class SettingsView(QWidget):
         self._tagging_worker.fileProgress.connect(self.on_tagging_file_progress)
         self._tagging_worker.finished.connect(self.on_tagging_finished)
         self._tagging_worker.error.connect(self.on_tagging_error)
+        self._tagging_dialog.canceled.connect(self._cancel_tagging)
         self._tagging_worker.start()
         self._tagging_dialog.show()
 
@@ -766,6 +768,13 @@ class SettingsView(QWidget):
         """worker가 보낸 실제 처리 개수로 Progress Dialog를 갱신합니다."""
         if self._tagging_dialog:
             self._tagging_dialog.update_progress(current, total, file_name)
+
+    def _cancel_tagging(self):
+        """취소 버튼 또는 X 버튼으로 태깅을 중단한다."""
+        if self._tagging_worker and self._tagging_worker.isRunning():
+            self._tagging_worker.request_stop()
+            self._tagging_worker.wait(3000)
+        self._close_tagging_dialog()
 
     def _close_tagging_dialog(self):
         """작업이 끝나면 Progress Dialog를 자동으로 닫습니다."""

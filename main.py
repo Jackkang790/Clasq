@@ -186,6 +186,7 @@ class MainWindow(QMainWindow):
         self._history = [IDX_SEARCH]
         self._history_pos = 0
         self.stacked_widget.setCurrentIndex(IDX_SEARCH)  # 기본 시작 화면 - 검색하기
+        self.sidebar.set_active(IDX_SEARCH)
         self._sync_nav_buttons()
 
         # 사이드바 버튼 클릭 -> 히스토리에 기록하며 페이지 이동
@@ -228,6 +229,7 @@ class MainWindow(QMainWindow):
     # -----------------------------------------------------------------
     def _navigate(self, index, record=True):
         self.stacked_widget.setCurrentIndex(index)
+        self.sidebar.set_active(index)
         if record:
             # 새 경로로 이동하면 현재 위치 이후의 forward 히스토리는 버린다
             self._history = self._history[: self._history_pos + 1]

@@ -322,6 +322,8 @@ class _FileTableScreen(QWidget):
 class _GroupedScreen(QWidget):
     organizeConfirmed = Signal()
     editRequested = Signal()
+    tagUntaggedRequested = Signal()
+    manualTagRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -412,7 +414,13 @@ class _GroupedScreen(QWidget):
             if w:
                 w.deleteLater()
         for name, files in groups:
-            self.group_layout.insertWidget(self.group_layout.count() - 1, _GroupedFolderCard(name, files))
+            card = _GroupedFolderCard(name, files)
+            # 미분류 카드에는 AI 태깅 버튼을 추가한다
+            if name.startswith("미분류 (AI 태그 없음)"):
+                manual_btn = _make_btn("수동 태그 지정", primary=True)
+                manual_btn.clicked.connect(self.manualTagRequested.emit)
+                card.layout().addWidget(manual_btn)
+            self.group_layout.insertWidget(self.group_layout.count() - 1, card)
 
     def set_banner_text(self, text):
         self._info_banner.set_text(text)
@@ -479,6 +487,7 @@ class OrganizeView(QWidget):
         self._table_screen.historyRequested.connect(self._show_history_dialog)
         self._grouped_screen.editRequested.connect(self._show_table)
         self._grouped_screen.organizeConfirmed.connect(self._on_organize_confirmed)
+        self._grouped_screen.manualTagRequested.connect(self._manual_tag_unclassified)
         if self.core:
             self._load_files_from_db()
 
@@ -490,12 +499,21 @@ class OrganizeView(QWidget):
 
     def _load_files_from_db(self):
         try:
+            managed = [
+                os.path.normcase(os.path.abspath(p))
+                for p in self.core.registry.get_managed_paths()
+            ]
             rows = []
             for file_info in self.core.get_all_files():
+                file_path = file_info["file_path"]
+                norm = os.path.normcase(os.path.abspath(file_path))
+                # managed_paths 하위에 있는 파일만 표시
+                if managed and not any(norm.startswith(m + os.sep) or norm == m for m in managed):
+                    continue
                 tags = file_info.get("tags", "")
                 if isinstance(tags, list):
                     tags = ", ".join(tags)
-                rows.append((file_info["file_name"], tags or "", file_info["file_path"]))
+                rows.append((file_info["file_name"], tags or "", file_path))
             self._table_screen.set_rows(rows)
         except Exception as exc:
             QMessageBox.critical(self, "파일 목록 오류", f"파일 목록을 불러오지 못했습니다.\n{exc}")
@@ -878,14 +896,30 @@ class OrganizeView(QWidget):
             return
 
         self._clear_pending_preview()
-        destination = QFileDialog.getExistingDirectory(self, "정리할 기본 폴더 선택")
+        destination = QFileDialog.getExistingDirectory(self, "정리 결과를 저장할 폴더 선택")
         if not destination:
             return
         self._auto_destination = destination
         self._start_incremental_inventory(context="auto_organize", folders=folders)
 
     def _get_target_folders(self):
-        """현재 테이블의 파일 경로에서 존재하고 접근 가능한 부모 폴더 목록을 반환한다."""
+        """사용자가 등록한 managed_paths를 스캔 대상으로 반환한다.
+
+        정리 완료 후 테이블엔 정리된 경로(=/정리폴더/문서/)가 표시되므로
+        테이블 행에서 부모 폴더를 추출하면 정리 결과 폴더가 재스캔 대상이 된다.
+        managed_paths(사용자가 '경로 추가'로 등록한 원본 폴더)를 사용해야
+        이미 정리된 파일이 다음 자동정리에서 다시 대상으로 잡히지 않는다.
+        """
+        try:
+            if self.core:
+                paths = self.core.registry.get_managed_paths()
+                return [
+                    p for p in paths
+                    if Path(p).is_dir() and os.access(p, os.R_OK)
+                ]
+        except Exception:
+            pass
+        # fallback: managed_paths를 읽을 수 없을 때만 테이블 행에서 파생
         seen = set()
         folders = []
         for _, _, file_path in self._current_table_rows():
@@ -950,6 +984,17 @@ class OrganizeView(QWidget):
         ]
         grouped_files = self.core.group_files_by_tags(organize_files)
 
+        base_path = self._auto_destination
+        if not base_path:
+            base_path = QFileDialog.getExistingDirectory(self, "정리 결과를 저장할 폴더 선택")
+        if not base_path:
+            self._clear_pending_preview()
+            self._show_table()
+            return
+        # 미분류만 있는 경우에도 destination을 저장해 태깅 완료 후 rebuild에 사용한다
+        self._preview_base_path = base_path
+        self._auto_destination = ""
+
         if not grouped_files:
             groups_ui = []
             if untagged:
@@ -973,14 +1018,6 @@ class OrganizeView(QWidget):
             self._grouped_screen.set_groups(groups_ui)
             self._grouped_screen.set_confirm_enabled(False)
             self._show_grouped()
-            return
-
-        base_path = self._auto_destination
-        if not base_path:
-            base_path = QFileDialog.getExistingDirectory(self, "정리할 기본 폴더 선택")
-        if not base_path:
-            self._clear_pending_preview()
-            self._show_table()
             return
 
         # 실제 파일 시스템을 변경하지 않고, 승인 후 생성될 대상 구조만 계산한다.
@@ -1013,8 +1050,6 @@ class OrganizeView(QWidget):
                 label,
             ))
 
-        self._preview_base_path = base_path
-        self._auto_destination = ""
         self._preview_move_plan = move_plan
         self._preview_conflicts = conflicts
         groups_ui = [(tag, files[:10]) for tag, files in groups_by_tag.items()]
@@ -1369,47 +1404,35 @@ class OrganizeView(QWidget):
             self._untagged_dialog = None
 
     def _on_untagged_analysis_finished(self, summary: dict):
-        """AI background 분석 완료 처리.
-
-        Batch 12: QMessageBox 모달 없이 Preview(grouped_screen)를 자동 갱신한다.
-        사용자 승인 없이 Apply를 자동 실행하지 않는다.
-        """
+        """AI background 분석 완료 처리."""
         self._close_untagged_dialog()
         summary = summary or {}
         success_count = summary.get("success", 0)
         failed_list = summary.get("failed", [])
 
-        # Apply 실행 중 → Plan 변경 금지 (Apply 대상이 중간에 바뀌면 안 됨)
         if self._apply_worker and self._apply_worker.isRunning():
             return
         if self._undo_worker and self._undo_worker.isRunning():
             return
 
-        # Stale context 감지 — 다른 폴더/다른 Plan으로 이동한 경우 무시
         if self._analysis_plan_context_id != self._plan_context_id:
             return
 
-        # 분석 완료 후 미분류 목록 갱신
-        untagged_remaining = self._get_untagged_from_plan()
-        self._last_untagged_files = untagged_remaining
-
         if success_count > 0:
-            # Preview 자동 갱신 (기존 Plan generation 로직 재사용)
-            self._refresh_grouped_after_analysis()
-
-            # 배너만 갱신 — 블로킹 모달 없이 사용자가 즉시 Preview를 확인할 수 있음
-            banner_text = (
-                f"AI 분석 완료 | 새로 분류됨: {success_count}개"
-                + (f" | 미분류: {len(untagged_remaining)}개" if untagged_remaining else "")
-                + " | 정리 계획이 갱신되었습니다. 파일은 아직 변경되지 않습니다."
-            )
-            self._grouped_screen.set_banner_text(banner_text)
-            # 새 Plan → confirm_btn은 이미 활성화 상태이므로 사용자가 확인 후 승인
+            # DB에서 최신 태그를 읽어 Preview 전체를 재구성한다
+            self._rebuild_preview_from_db(newly_tagged=success_count)
         else:
-            # 전체 실패 — 배너로 상태 안내, 모달 없음
+            untagged_remaining = self._get_untagged_from_plan()
+            self._last_untagged_files = untagged_remaining
+            # 실패 원인을 추출해 배너에 표시
+            reasons = list({
+                f["reason"].split("\n")[0][:80]
+                for f in failed_list if f.get("reason")
+            })
+            reason_text = reasons[0] if reasons else "원인 불명"
             banner_text = (
-                f"AI 분석 완료 | 태그 생성 실패: {len(failed_list)}개 — 미분류 상태 유지 | "
-                "파일은 변경되지 않습니다."
+                f"AI 분석 실패 ({len(failed_list)}개) — {reason_text} | "
+                "수동 태그 지정으로 직접 분류할 수 있습니다."
             )
             self._grouped_screen.set_banner_text(banner_text)
 
@@ -1418,29 +1441,257 @@ class OrganizeView(QWidget):
         safe_msg = message.split("\n")[0][:200] if message else "알 수 없는 오류"
         QMessageBox.warning(self, "AI 분석 오류", f"AI 분석 중 오류가 발생했습니다:\n{safe_msg}")
 
-    def _refresh_grouped_after_analysis(self):
-        """AI 분석 완료 후 grouped screen의 그룹 카드를 갱신한다."""
-        scanned = self._last_plan_files
-        untagged_set = {
+    def _manual_tag_unclassified(self):
+        """미분류 파일을 다중 선택해 태그별로 나눠 분류하는 다이얼로그를 연다."""
+        if not self._last_untagged_files:
+            QMessageBox.information(self, "수동 태그 지정", "미분류 파일이 없습니다.")
+            return
+
+        from PySide6.QtWidgets import (
+            QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
+            QLineEdit, QPushButton, QLabel, QAbstractItemView,
+        )
+
+        dlg = QDialog(self)
+        dlg.setWindowTitle("수동 태그 지정")
+        dlg.setMinimumSize(600, 500)
+        root = QVBoxLayout(dlg)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(12)
+
+        hint = QLabel(
+            "파일을 선택(Ctrl/Shift로 다중 선택)한 뒤 태그를 입력하고 '적용'을 누르세요.\n"
+            "태그 이름으로 정리 폴더가 생성됩니다. 다른 태그로 반복 적용할 수 있습니다."
+        )
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        file_list = QListWidget()
+        file_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        file_list.setAlternatingRowColors(True)
+
+        # DB에서 정확한 경로와 ID를 읽어 목록 구성 (경로 불일치 방지)
+        import sqlite3 as _sqlite3
+        db_path = getattr(self.core, "db_path", "file_manager.db")
+        norm_to_db: dict[str, tuple[int, str]] = {}  # normcase(path) → (id, db_path)
+        try:
+            _conn = _sqlite3.connect(db_path, timeout=10)
+            for scan_path in self._last_untagged_files:
+                norm = os.path.normcase(os.path.abspath(scan_path))
+                row = _conn.execute(
+                    "SELECT id, file_path FROM files WHERE file_path = ?", (scan_path,)
+                ).fetchone()
+                if not row:
+                    # 경로가 다소 다를 수 있으므로 normcase로 한 번 더 탐색
+                    like = _conn.execute(
+                        "SELECT id, file_path FROM files WHERE LOWER(file_path) = ?",
+                        (scan_path.lower(),)
+                    ).fetchone()
+                    row = like
+                if row:
+                    norm_to_db[norm] = (row[0], row[1])
+            _conn.close()
+        except Exception:
+            pass
+
+        for p in self._last_untagged_files:
+            norm = os.path.normcase(os.path.abspath(p))
+            db_entry = norm_to_db.get(norm)
+            label = Path(p).name
+            item = QListWidgetItem(label)
+            # UserRole: (file_id, exact_db_path) — 없으면 fallback으로 스캔 경로
+            item.setData(Qt.UserRole, db_entry if db_entry else (None, p))
+            file_list.addItem(item)
+        root.addWidget(file_list, stretch=1)
+
+        # 태그 입력 + 적용 행
+        tag_row = QHBoxLayout()
+        tag_row.setSpacing(8)
+        tag_input = QLineEdit()
+        tag_input.setPlaceholderText("태그 입력 (예: 업무, 개인, 프로젝트)")
+        tag_input.setFixedHeight(36)
+        apply_btn = QPushButton("선택 파일에 적용")
+        apply_btn.setFixedHeight(36)
+        apply_btn.setFixedWidth(140)
+        apply_btn.setStyleSheet(
+            "QPushButton { background:#6C5CE7; color:white; border-radius:6px; "
+            "font-weight:bold; } QPushButton:hover { background:#5B4BC4; }"
+        )
+        tag_row.addWidget(tag_input, stretch=1)
+        tag_row.addWidget(apply_btn)
+        root.addLayout(tag_row)
+
+        # 적용 이력 표시
+        self._manual_tag_log = QLabel("")
+        self._manual_tag_log.setWordWrap(True)
+        self._manual_tag_log.setStyleSheet("color:#555; font-size:12px;")
+        root.addWidget(self._manual_tag_log)
+
+        # applied: db_path → (file_id_or_None, tag)
+        applied: dict[str, tuple] = {}
+
+        def _apply():
+            tag = tag_input.text().strip()
+            if not tag:
+                QMessageBox.warning(dlg, "태그 입력 필요", "태그를 입력해 주세요.")
+                return
+            selected = file_list.selectedItems()
+            if not selected:
+                QMessageBox.warning(dlg, "파일 선택 필요", "파일을 선택해 주세요.")
+                return
+            for item in selected:
+                fid, db_path = item.data(Qt.UserRole)
+                applied[db_path] = (fid, tag)
+                item.setText(f"{Path(db_path).name}  →  {tag}")
+                item.setForeground(Qt.darkGreen)
+            log_lines = {}
+            for dp, (_, t) in applied.items():
+                log_lines.setdefault(t, []).append(Path(dp).name)
+            self._manual_tag_log.setText(
+                "  |  ".join(f"[{t}] {len(fs)}개" for t, fs in log_lines.items())
+            )
+            tag_input.clear()
+
+        apply_btn.clicked.connect(_apply)
+        tag_input.returnPressed.connect(_apply)
+
+        # 확인/취소
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        cancel_btn = QPushButton("취소")
+        cancel_btn.setMinimumHeight(34)
+        cancel_btn.clicked.connect(dlg.reject)
+        ok_btn = QPushButton("정리 목록에 반영")
+        ok_btn.setMinimumHeight(34)
+        ok_btn.setStyleSheet(apply_btn.styleSheet())
+        ok_btn.clicked.connect(dlg.accept)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(ok_btn)
+        root.addLayout(btn_row)
+
+        if dlg.exec() != QDialog.Accepted or not applied:
+            return
+
+        # DB 업데이트 — ID가 있으면 ID 기반, 없으면 경로 기반
+        import time as _time
+        now = _time.strftime("%Y-%m-%d %H:%M:%S")
+        failed_paths = []
+        try:
+            conn = _sqlite3.connect(db_path, timeout=10)
+            for db_path_key, (fid, tag) in applied.items():
+                if fid is not None:
+                    cur = conn.execute(
+                        "UPDATE files SET tags=?, category=?, updated_at=? WHERE id=?",
+                        (tag, f"#{tag}", now, fid),
+                    )
+                else:
+                    cur = conn.execute(
+                        "UPDATE files SET tags=?, category=?, updated_at=? WHERE file_path=?",
+                        (tag, f"#{tag}", now, db_path_key),
+                    )
+                if cur.rowcount == 0:
+                    failed_paths.append(Path(db_path_key).name)
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            QMessageBox.critical(self, "수동 태그 지정 오류", str(e))
+            return
+        if failed_paths:
+            QMessageBox.warning(
+                self, "일부 반영 실패",
+                f"다음 파일은 DB에서 찾을 수 없어 태그를 저장하지 못했습니다:\n"
+                + "\n".join(failed_paths[:10])
+            )
+
+        self._rebuild_preview_from_db(newly_tagged=len(applied) - len(failed_paths),
+                                      ignore_plan_filter=True)
+
+    def _rebuild_preview_from_db(self, newly_tagged: int = 0, ignore_plan_filter: bool = False):
+        """AI 태깅 완료 후 DB에서 최신 태그를 읽어 Preview를 완전히 재구성한다.
+
+        ignore_plan_filter=True: 수동 태그 직후처럼 plan_file_set과 무관하게
+        미분류 목록 파일 기준으로 재구성한다.
+        """
+        if not self.core or not self._preview_base_path:
+            return
+
+        plan_file_set = {
             os.path.normcase(os.path.abspath(p))
-            for p in self._last_untagged_files
+            for p in self._last_plan_files
         }
 
-        folder_files: dict = {}
-        for f in scanned:
-            if os.path.normcase(os.path.abspath(f)) in untagged_set:
-                continue
-            folder = str(Path(f).parent)
-            kind = self._get_file_kind_by_extension(f)
-            name = Path(f).name
-            label = name[:15] + "..." if len(name) > 15 else name
-            folder_files.setdefault(folder, []).append((kind, label))
+        # DB에서 최신 태그 조회
+        all_tagged = self.core.get_files_for_organize()
+        if ignore_plan_filter or not plan_file_set:
+            # plan_file_set을 신뢰할 수 없는 경우 미분류 목록 + 태그된 파일 전체 사용
+            untagged_norm = {
+                os.path.normcase(os.path.abspath(p))
+                for p in self._last_untagged_files
+            }
+            organize_files = [
+                fi for fi in all_tagged
+                if os.path.normcase(os.path.abspath(fi["file_path"])) in untagged_norm
+                or os.path.normcase(os.path.abspath(fi["file_path"])) in plan_file_set
+            ]
+        else:
+            organize_files = [
+                fi for fi in all_tagged
+                if os.path.normcase(os.path.abspath(fi["file_path"])) in plan_file_set
+            ]
 
-        groups_ui = [
-            (Path(fp).name or fp, files[:10])
-            for fp, files in folder_files.items()
-        ]
+        # 미분류 목록 갱신
+        tagged_norm = {
+            os.path.normcase(os.path.abspath(fi["file_path"])) for fi in organize_files
+        }
+        if self._last_plan_files:
+            self._last_untagged_files = [
+                p for p in self._last_plan_files
+                if os.path.normcase(os.path.abspath(p)) not in tagged_norm
+                and os.path.isfile(p)
+            ]
+        else:
+            # plan이 없는 경우(수동 태그 직후 등) — 기존 미분류에서 방금 태깅된 파일만 제거
+            self._last_untagged_files = [
+                p for p in self._last_untagged_files
+                if os.path.normcase(os.path.abspath(p)) not in tagged_norm
+                and os.path.isfile(p)
+            ]
 
+        grouped_files = self.core.group_files_by_tags(organize_files)
+        preview = self.core.build_organize_preview(grouped_files, self._preview_base_path)
+
+        files_by_path = {
+            os.path.normcase(os.path.abspath(fi["file_path"])): fi
+            for fi in organize_files
+        }
+        groups_by_tag: dict = {}
+        move_plan = []
+        conflicts = []
+        for item in preview:
+            label = item["file_name"]
+            if item["has_conflict"]:
+                label = f"{label} (충돌로 제외)"
+                conflicts.append(item)
+            else:
+                file_entry = files_by_path.get(
+                    os.path.normcase(os.path.abspath(item["source_path"]))
+                )
+                if file_entry:
+                    move_plan.append({
+                        "file_id": file_entry["id"],
+                        "file_path": item["source_path"],
+                        "target_path": item["target_path"],
+                        "file_name": item["file_name"],
+                    })
+            groups_by_tag.setdefault(item["tag"], []).append((
+                self._get_file_kind_by_extension(item["source_path"]),
+                label,
+            ))
+
+        self._preview_move_plan = move_plan
+        self._preview_conflicts = conflicts
+
+        groups_ui = [(tag, files[:10]) for tag, files in groups_by_tag.items()]
         if self._last_untagged_files:
             untagged_cards = [
                 (
@@ -1457,7 +1708,15 @@ class OrganizeView(QWidget):
         if not groups_ui:
             groups_ui = [("분석 완료 (스캔된 파일 없음)", [])]
 
+        untagged_count = len(self._last_untagged_files)
+        banner_text = (
+            f"AI 분석 완료 | 새로 분류됨: {newly_tagged}개"
+            + (f" | 미분류: {untagged_count}개" if untagged_count else "")
+            + " | 정리 계획이 갱신되었습니다. 파일은 아직 변경되지 않습니다."
+        )
+        self._grouped_screen.set_banner_text(banner_text)
         self._grouped_screen.set_groups(groups_ui)
+        self._grouped_screen.set_confirm_enabled(bool(move_plan))
 
     # ── Batch 13: History / Undo ──────────────────────────────────────────────
 
