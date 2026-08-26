@@ -11,7 +11,15 @@ Clasq는 로컬 AI를 이용해 파일을 검색하고, 정리 계획을 미리 
 
 설치파일을 다운로드해 실행하면 됩니다. Python, pip, PySide6, Docker, WSL, llama.cpp, FFmpeg는 별도로 설치할 필요가 없습니다.
 
-> 현재 v1.1.0은 점검용 prerelease이며 production code signing이 적용되지 않았습니다. Windows SmartScreen 또는 보안 경고가 표시될 수 있습니다.
+> production code signing이 적용되지 않았습니다. Windows SmartScreen 또는 보안 경고가 표시될 수 있습니다.
+
+## 설치파일 무결성
+
+`Clasq_Setup_1.1.0.exe` SHA-256:
+
+```text
+6130ABE5079172217D84299E42AE7EAA28269548191EE224E0288DB2C7FDCB26
+```
 
 ## 지원 환경
 
