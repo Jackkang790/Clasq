@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 
 from src.utils.db_manager import FileRegistryManager
-from src.utils.workers import FolderAnalysisPlanWorker
+from src.utils.workers import FolderAnalysisPlanWorker, IncrementalInventoryWorker
 
 
 def _db(tmp: str) -> str:
@@ -41,11 +41,11 @@ class TestBatch8ButtonWorkerConnection(unittest.TestCase):
         self.assertIn('_on_auto_organize', src)
         self.assertIn('autoOrganizeRequested', src)
 
-    def test_plan_worker_used_in_auto_organize(self):
-        """_on_auto_organize 소스에서 FolderAnalysisPlanWorker 사용 확인."""
+    def test_incremental_worker_used_in_auto_organize(self):
+        """자동정리는 AI/index 작업 전 fast inventory worker를 사용한다."""
         from src.ui.views.organize_view import OrganizeView
         src = inspect.getsource(OrganizeView._on_auto_organize)
-        self.assertIn('FolderAnalysisPlanWorker', src)
+        self.assertIn('_start_incremental_inventory', src)
 
     def test_auto_btn_stored_in_file_table_screen(self):
         """_FileTableScreen 소스에 self.auto_btn 저장 확인."""
@@ -53,11 +53,15 @@ class TestBatch8ButtonWorkerConnection(unittest.TestCase):
         src = inspect.getsource(_FileTableScreen.__init__)
         self.assertIn('self.auto_btn', src)
 
-    def test_worker_start_called_in_auto_organize(self):
-        """_on_auto_organize 소스에서 worker.start() 호출 확인 (비동기 실행)."""
+    def test_incremental_worker_starts_asynchronously(self):
+        """공용 inventory 시작 함수가 QThread를 비동기로 실행한다."""
         from src.ui.views.organize_view import OrganizeView
-        src = inspect.getsource(OrganizeView._on_auto_organize)
+        src = inspect.getsource(OrganizeView._start_incremental_inventory)
         self.assertIn('.start()', src)
+
+    def test_incremental_inventory_worker_is_qthread(self):
+        from PySide6.QtCore import QThread
+        self.assertTrue(issubclass(IncrementalInventoryWorker, QThread))
 
     def test_folder_analysis_plan_worker_is_qthread(self):
         """FolderAnalysisPlanWorker가 QThread를 상속해야 한다 (UI 블로킹 방지)."""

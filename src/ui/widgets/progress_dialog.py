@@ -10,6 +10,7 @@ class TaskProgressDialog(QProgressDialog):
         super().__init__(status_text, "취소" if cancellable else None, 0, 0, parent)
         self._status_text = status_text
         self._unit = unit
+        self._cancellable = cancellable
         self.setWindowTitle(title)
         self.setWindowModality(Qt.WindowModal)
         self.setMinimumDuration(0)
@@ -19,6 +20,11 @@ class TaskProgressDialog(QProgressDialog):
             self.setCancelButton(None)
         self.setMinimumWidth(380)
         self.setLabelText(status_text)
+
+    def closeEvent(self, event):
+        """X 버튼으로 닫으면 canceled 시그널을 발생시켜 작업을 중단한다."""
+        self.cancel()
+        event.accept()
 
     def update_progress(self, current, total, detail="", status=None):
         """실제 처리 개수에 맞춰 Progress Bar와 안내 문구를 갱신합니다."""

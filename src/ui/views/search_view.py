@@ -277,6 +277,25 @@ class SearchView(QWidget):
         self.scroll_area.setWidget(self.chat_container)
         chat_main_layout.addWidget(self.scroll_area, 1)
 
+        # 첨부 분석 종료 버튼 — 입력창 위에 항상 고정 (숨김 상태로 시작)
+        self._attachment_bar = QWidget()
+        _bar_layout = QHBoxLayout(self._attachment_bar)
+        _bar_layout.setContentsMargins(10, 4, 10, 4)
+        self._end_attachment_btn = QPushButton("✕  첨부 분석 종료")
+        self._end_attachment_btn.setFixedHeight(32)
+        self._end_attachment_btn.setCursor(Qt.PointingHandCursor)
+        self._end_attachment_btn.setStyleSheet("""
+            QPushButton { background: #FFFFFF; color: #6C5CE7; border: 1px solid #6C5CE7;
+                          border-radius: 7px; padding: 0 14px; font-weight: bold; }
+            QPushButton:hover { background: #F0EDFE; }
+        """)
+        self._end_attachment_btn.clicked.connect(self._end_attachment_context)
+        _bar_layout.addStretch()
+        _bar_layout.addWidget(self._end_attachment_btn)
+        _bar_layout.addStretch()
+        self._attachment_bar.setVisible(False)
+        chat_main_layout.addWidget(self._attachment_bar)
+
         # ★ 기존 bottom_input_layout 대신 신규 위젯 배치
         self.chat_input_widget = FileUploadView()
         self.chat_input_widget.message_submitted.connect(self.on_chat_search)
@@ -415,6 +434,7 @@ class SearchView(QWidget):
         self._attached_file_path = None
         self._attached_analysis = None
         self._ai_services = None
+        self._attachment_bar.setVisible(False)
         return had_context
 
     def _end_attachment_context(self):
@@ -434,20 +454,7 @@ class SearchView(QWidget):
         )
 
     def _add_attachment_context_controls(self):
-        row = QHBoxLayout()
-        end_btn = QPushButton("첨부 분석 종료")
-        end_btn.setFixedHeight(32)
-        end_btn.setCursor(Qt.PointingHandCursor)
-        end_btn.setStyleSheet("""
-            QPushButton { background: #FFFFFF; color: #6C5CE7; border: 1px solid #6C5CE7;
-                          border-radius: 7px; padding: 0 12px; font-weight: bold; }
-            QPushButton:hover { background: #F0EDFE; }
-        """)
-        end_btn.clicked.connect(self._end_attachment_context)
-        row.addWidget(end_btn)
-        row.addStretch()
-        self.chat_layout.insertLayout(self.chat_layout.count() - 1, row)
-        self.scroll_to_bottom()
+        self._attachment_bar.setVisible(True)
 
     def process_query(self, query: str):
         self.add_message(query, is_user=True)

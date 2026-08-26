@@ -8,7 +8,8 @@ from PySide6.QtWidgets import (
     QInputDialog, QMessageBox
 )
 from PySide6.QtCore import Qt, Property, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QPainter, QColor
+from PySide6.QtGui import QIcon, QPainter, QColor
+from PySide6.QtCore import QSize
 from PySide6.QtWidgets import QFileDialog
 from PySide6.QtCore import QRect
 from PySide6.QtWidgets import QStyle, QStyleOptionButton
@@ -144,6 +145,8 @@ class SettingsView(QWidget):
             border-color: #EBEBEE;
         }
 
+        QPushButton#backbtn { background: transparent; border: none; }
+
 
         /* 그룹박스 & 테이블 레이아웃 */
         QGroupBox {
@@ -223,6 +226,14 @@ class SettingsView(QWidget):
         tablelayout = QVBoxLayout()
         btnlayout = QHBoxLayout()
 
+        # 설정 화면에서 기존 홈(검색 화면)으로 돌아가는 바로가기
+        backbtn = QPushButton()
+        backbtn.setIcon(QIcon(str(ICONS_DIR / "home.svg")))
+        backbtn.setIconSize(QSize(24, 24))
+        backbtn.setObjectName("backbtn")
+        backbtn.setToolTip("홈으로")
+        backbtn.clicked.connect(self.go_search)
+
         title = QLabel('파일경로 지정')
         title.setObjectName("title")
 
@@ -290,6 +301,7 @@ class SettingsView(QWidget):
         # 레이아웃 조립
         header.addWidget(title)
         header.addStretch()
+        header.addWidget(backbtn)
 
         optionlayout.addWidget(savebtn)
         optionlayout.addWidget(reloadbtn)
@@ -737,6 +749,7 @@ class SettingsView(QWidget):
 
         self._tagging_dialog = TaskProgressDialog(
             "파일 태깅 중", "파일을 분석하고 있습니다...", parent=self, unit="파일",
+            cancellable=True,
         )
 
         self._tagging_worker = FolderScanAndTagWorker(paths, self.core)
@@ -744,6 +757,7 @@ class SettingsView(QWidget):
         self._tagging_worker.fileProgress.connect(self.on_tagging_file_progress)
         self._tagging_worker.finished.connect(self.on_tagging_finished)
         self._tagging_worker.error.connect(self.on_tagging_error)
+        self._tagging_dialog.canceled.connect(self._cancel_tagging)
         self._tagging_worker.start()
         self._tagging_dialog.show()
 
@@ -754,6 +768,13 @@ class SettingsView(QWidget):
         """worker가 보낸 실제 처리 개수로 Progress Dialog를 갱신합니다."""
         if self._tagging_dialog:
             self._tagging_dialog.update_progress(current, total, file_name)
+
+    def _cancel_tagging(self):
+        """취소 버튼 또는 X 버튼으로 태깅을 중단한다."""
+        if self._tagging_worker and self._tagging_worker.isRunning():
+            self._tagging_worker.request_stop()
+            self._tagging_worker.wait(3000)
+        self._close_tagging_dialog()
 
     def _close_tagging_dialog(self):
         """작업이 끝나면 Progress Dialog를 자동으로 닫습니다."""

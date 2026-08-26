@@ -110,11 +110,15 @@ class TestBatch9ApprovalRequired(unittest.TestCase):
         src = inspect.getsource(OrganizeView._on_organize_confirmed)
         self.assertIn("OrganizeApplyWorker", src)
 
-    def test_folder_dialog_before_apply(self):
-        """정리 기본 폴더 선택 dialog가 Apply 전에 있어야 한다."""
+    def test_folder_dialog_and_preview_are_built_before_apply(self):
+        """정리 기본 폴더 선택과 Preview 생성은 grouped 화면을 열기 전에 수행한다."""
         from src.ui.views.organize_view import OrganizeView
-        src = inspect.getsource(OrganizeView._on_organize_confirmed)
-        self.assertIn("QFileDialog.getExistingDirectory", src)
+        completed = inspect.getsource(OrganizeView._on_plan_completed)
+        confirmed = inspect.getsource(OrganizeView._on_organize_confirmed)
+        self.assertIn("QFileDialog.getExistingDirectory", completed)
+        self.assertIn("build_organize_preview", completed)
+        self.assertNotIn("QFileDialog.getExistingDirectory", confirmed)
+        self.assertNotIn("build_organize_preview", confirmed)
 
 
 # ── 3. 실제 파일 이동 테스트 ──────────────────────────────────────────────────

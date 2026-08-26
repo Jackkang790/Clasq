@@ -55,3 +55,15 @@ class Sidebar(QFrame):
         self.btn_search.clicked.connect(lambda: self.page_changed.emit(1))
         self.btn_organize.clicked.connect(lambda: self.page_changed.emit(2))
         self.btn_saved.clicked.connect(lambda: self.page_changed.emit(3))
+
+    def set_active(self, index: int):
+        """현재 활성 탭 버튼을 강조 표시한다. index: 1=검색, 2=정리, 3=저장목록."""
+        mapping = {1: self.btn_search, 2: self.btn_organize, 3: self.btn_saved}
+        for idx, btn in mapping.items():
+            if idx == index:
+                btn.setStyleSheet(
+                    "background-color: #6C5CE7; color: white; "
+                    "font-weight: bold; border-radius: 8px; padding: 10px 12px;"
+                )
+            else:
+                btn.setStyleSheet("")

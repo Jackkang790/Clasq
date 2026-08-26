@@ -23,11 +23,14 @@ class OrganizeTaggedOnlyTests(unittest.TestCase):
         self.assertIn("미태깅 파일", confirmed)
         self.assertIn("저장목록", confirmed)
 
-    def test_adding_organize_path_does_not_offer_or_start_ai_tagging(self):
+    def test_adding_path_starts_incremental_tagging_workflow(self):
         methods = self._method_sources()
         added = methods["_on_path_added"]
-        self.assertNotIn("_start_ai_tagging", added)
-        self.assertIn("미태깅 전체 AI 태깅", added)
+        inventory = methods["_on_inventory_completed"]
+        self.assertIn("_start_incremental_inventory", added)
+        self.assertIn("QMessageBox.question", inventory)
+        self.assertIn("_start_ai_tagging", inventory)
+        self.assertNotIn("미태깅 전체 AI 태깅", added)
 
 
 if __name__ == "__main__":

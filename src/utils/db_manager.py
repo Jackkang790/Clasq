@@ -557,6 +557,85 @@ class FileRegistryManager:
             if owns_conn:
                 conn.close()
 
+    def register_unanalyzed_file(self, file_path: str) -> Dict[str, Any]:
+        """Register a discovered file without inventing AI metadata.
+
+        This is deliberately separate from ``save_file_result``: discovery must
+        never trigger duplicate quarantine or move a user file.  An existing
+        valid analysis is preserved when its stat fingerprint is unchanged;
+        new or changed files become explicit untagged recovery candidates.
+        """
+        result = {"success": False, "file_path": file_path}
+        file_path = os.path.abspath(os.path.normpath(file_path))
+        if not os.path.isfile(file_path):
+            result["message"] = f"파일을 찾을 수 없습니다: {file_path}"
+            return result
+
+        conn = self._get_conn()
+        owns_conn = self._bulk_conn is None
+        try:
+            stat = os.stat(file_path)
+            file_hash = self.compute_file_hash(file_path)
+            now = time.strftime("%Y-%m-%d %H:%M:%S")
+            file_name = os.path.basename(file_path)
+            source_path = os.path.dirname(file_path)
+            existing = conn.execute(
+                "SELECT id FROM files WHERE file_path = ?",
+                (file_path,),
+            ).fetchone()
+            if existing:
+                # Existing rows represent the last successful analysis state.
+                # Discovery must not erase metadata or advance its fingerprint.
+                result.update(success=True, existing=True)
+                return result
+
+            conn.execute("BEGIN IMMEDIATE")
+            cursor = conn.execute(
+                """
+                INSERT INTO files (
+                    file_name, display_name, file_path, ai_comment, category,
+                    file_hash, file_size, created_at, updated_at,
+                    file_created_at, file_modified_at, tags, source_path,
+                    file_mtime_ns
+                ) VALUES (?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, '', ?, ?)
+                ON CONFLICT(file_path) DO NOTHING
+                """,
+                (
+                    file_name, os.path.splitext(file_name)[0], file_path,
+                    file_hash, stat.st_size, now, now,
+                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_ctime)),
+                    time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stat.st_mtime)),
+                    source_path, stat.st_mtime_ns,
+                ),
+            )
+            if cursor.rowcount == 0:
+                conn.commit()
+                result.update(success=True, existing=True)
+                return result
+            conn.execute(
+                """
+                INSERT INTO file_fingerprint_cache
+                    (file_path, file_hash, file_size, file_mtime_ns, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(file_path) DO UPDATE SET
+                    file_hash = excluded.file_hash,
+                    file_size = excluded.file_size,
+                    file_mtime_ns = excluded.file_mtime_ns,
+                    updated_at = excluded.updated_at
+                """,
+                (file_path, file_hash, stat.st_size, stat.st_mtime_ns, now),
+            )
+            conn.commit()
+            result.update(success=True, existing=False)
+            return result
+        except Exception as exc:
+            conn.rollback()
+            result["message"] = f"미태깅 파일 등록 오류: {exc}"
+            return result
+        finally:
+            if owns_conn:
+                conn.close()
+
     # ---------------------------------------------------------
     # 6. DB 초기화 (gui_app.py의 reset_db_and_path 대체용)
     #    - os.remove() 대신 SQL DELETE + sqlite_sequence 리셋 방식을
