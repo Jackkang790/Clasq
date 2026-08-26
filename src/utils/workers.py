@@ -122,9 +122,11 @@ class FolderScanAndTagWorker(QThread):
             try:
                 from .local_text_index import LocalTextIndexer
                 from .search_snapshot import refresh_search_snapshot
-                self.progress.emit("분석한 파일의 검색 인덱스를 갱신하고 있습니다...")
-                index_stats = LocalTextIndexer(self.core.db_path).synchronize(files_to_process)
-                refresh_search_snapshot(self.core.db_path)
+                successful_paths = [item["file_path"] for item in results]
+                if successful_paths:
+                    self.progress.emit("분석한 파일의 검색 인덱스를 갱신하고 있습니다...")
+                    index_stats = LocalTextIndexer(self.core.db_path).synchronize(successful_paths)
+                    refresh_search_snapshot(self.core.db_path)
             except Exception as exc:
                 log.warning("incremental post-tag index refresh failed: %s", exc)
 

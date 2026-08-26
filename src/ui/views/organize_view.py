@@ -696,7 +696,9 @@ class OrganizeView(QWidget):
                 item["file_path"], item["source_file_path"], item["file_hash"]
             )
         failures = []
-        for item in plan.get("pending", []):
+        # Only NEW files need a placeholder row. Existing untagged/changed
+        # records keep the last successful metadata and fingerprint intact.
+        for item in plan.get("new", []):
             result = self.core.registry.register_unanalyzed_file(item["file_path"])
             if not result.get("success"):
                 failures.append(item["file_path"])
@@ -933,10 +935,18 @@ class OrganizeView(QWidget):
             os.path.normcase(os.path.abspath(path))
             for path in self._last_plan_files
         }
+        unresolved_paths = {
+            os.path.normcase(os.path.abspath(item["file_path"]))
+            for item in plan.get("pending", [])
+        }
         all_tagged = self.core.get_files_for_organize()
         organize_files = [
             file_info for file_info in all_tagged
-            if os.path.normcase(os.path.abspath(file_info["file_path"])) in plan_file_set
+            if (
+                os.path.normcase(os.path.abspath(file_info["file_path"])) in plan_file_set
+                and os.path.normcase(os.path.abspath(file_info["file_path"]))
+                not in unresolved_paths
+            )
         ]
         grouped_files = self.core.group_files_by_tags(organize_files)
 

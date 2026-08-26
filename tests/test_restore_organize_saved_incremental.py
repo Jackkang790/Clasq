@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,7 @@ from unittest.mock import patch
 
 from src.utils.core import ClasqCore, build_incremental_analysis_plan
 from src.utils.workers import estimate_analysis_eta
+from src.utils.workers import FolderScanAndTagWorker
 
 
 class RestoreOrganizeSavedIncrementalTests(unittest.TestCase):
@@ -43,6 +45,20 @@ class RestoreOrganizeSavedIncrementalTests(unittest.TestCase):
             },
         })
         self.assertTrue(result["success"])
+
+    def _analysis_state(self, path):
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute(
+                "SELECT tags, ai_comment, category, file_hash, file_size, file_mtime_ns "
+                "FROM files WHERE file_path = ?",
+                (str(path),),
+            ).fetchone()
+            cache = conn.execute(
+                "SELECT file_hash, file_size, file_mtime_ns "
+                "FROM file_fingerprint_cache WHERE file_path = ?",
+                (str(path),),
+            ).fetchone()
+        return row, cache
 
     def test_declined_path_tagging_still_creates_saved_recovery_records(self):
         from src.ui.views.organize_view import OrganizeView
@@ -101,6 +117,20 @@ class RestoreOrganizeSavedIncrementalTests(unittest.TestCase):
         self.assertEqual(plan["counts"]["new"], 3)
         self.assertEqual(plan["counts"]["pending"], 5)
         self.assertEqual(plan["performance"]["stat_only_skipped"], 95)
+
+        from src.ui.views.organize_view import OrganizeView
+        view = OrganizeView(self.core)
+        view._materialize_inventory_records(plan)
+        view._auto_destination = str(Path(self.tmp) / "destination")
+        view._on_plan_completed(plan)
+        self.assertEqual(len(view._preview_move_plan), 95)
+        pending_paths = {item["file_path"] for item in plan["pending"]}
+        self.assertTrue(
+            pending_paths.isdisjoint(
+                {item["file_path"] for item in view._preview_move_plan}
+            )
+        )
+        view.deleteLater()
 
     def test_valid_tag_is_reusable_even_without_ai_comment(self):
         path = self._file("manual-tag.txt")
@@ -169,6 +199,95 @@ class RestoreOrganizeSavedIncrementalTests(unittest.TestCase):
         self.assertTrue(path.is_file())
         self.assertEqual(path.read_bytes(), before)
         self.assertEqual(list(self.root.iterdir()), [path])
+
+    def test_changed_tagged_decline_preserves_analysis_and_stays_pending(self):
+        from PySide6.QtWidgets import QMessageBox
+        from src.ui.views.organize_view import OrganizeView
+
+        path = self._file("changed-decline.txt", "old")
+        self._save_tagged(path, "문서")
+        before_row, before_cache = self._analysis_state(path)
+        path.write_text("new content", encoding="utf-8")
+        plan = build_incremental_analysis_plan([str(path)], self.db_path)
+        self.assertEqual(plan["counts"]["changed"], 1)
+
+        view = OrganizeView(self.core)
+        view._inventory_context = "path_add"
+        with patch(
+            "src.ui.views.organize_view.QMessageBox.question",
+            return_value=QMessageBox.No,
+        ):
+            view._on_inventory_completed(plan)
+
+        after_row, after_cache = self._analysis_state(path)
+        self.assertEqual(after_row, before_row)
+        self.assertEqual(after_cache, before_cache)
+        retry = build_incremental_analysis_plan([str(path)], self.db_path)
+        self.assertEqual(retry["counts"]["changed"], 1)
+
+        view._auto_destination = str(Path(self.tmp) / "destination")
+        view._on_plan_completed(retry)
+        self.assertEqual(view._preview_move_plan, [])
+        self.assertFalse(view._grouped_screen.confirm_btn.isEnabled())
+        view.deleteLater()
+
+    def test_changed_tagged_ai_failure_preserves_state_and_skips_index_commit(self):
+        path = self._file("changed-failure.txt", "old")
+        self._save_tagged(path, "문서")
+        before = self._analysis_state(path)
+        path.write_text("changed", encoding="utf-8")
+        plan = build_incremental_analysis_plan([str(path)], self.db_path)
+
+        from src.ui.views.organize_view import OrganizeView
+        view = OrganizeView(self.core)
+        view._materialize_inventory_records(plan)
+        with patch.object(self.core, "process_file_upload", side_effect=RuntimeError("AI failed")), \
+             patch("src.utils.local_text_index.LocalTextIndexer.synchronize") as synchronize:
+            worker = FolderScanAndTagWorker([str(path)], self.core)
+            worker.run()
+
+        self.assertEqual(self._analysis_state(path), before)
+        synchronize.assert_not_called()
+        retry = build_incremental_analysis_plan([str(path)], self.db_path)
+        self.assertEqual(retry["counts"]["changed"], 1)
+        view.deleteLater()
+
+    def test_changed_tagged_ai_success_replaces_analysis_and_fingerprint(self):
+        path = self._file("changed-success.txt", "old")
+        self._save_tagged(path, "OLD")
+        old_row, old_cache = self._analysis_state(path)
+        path.write_text("new analyzed content", encoding="utf-8")
+
+        response = {
+            "status": "SUCCESS",
+            "metadata": {
+                "display_name": path.stem,
+                "tags": ["NEW"],
+                "ai_comment": "new analysis",
+            },
+        }
+        with patch.object(self.core.analyzer, "analyze_document_text", return_value=response):
+            result = self.core.process_file_upload(str(path))
+        self.assertEqual(result.get("status"), "SUCCESS")
+
+        new_row, new_cache = self._analysis_state(path)
+        self.assertEqual(new_row[0], "NEW")
+        self.assertEqual(new_row[1], "new analysis")
+        self.assertNotEqual(new_row[3], old_row[3])
+        self.assertNotEqual(new_cache, old_cache)
+        retry = build_incremental_analysis_plan([str(path)], self.db_path)
+        self.assertEqual(retry["counts"]["already_analyzed"], 1)
+        self.assertEqual(retry["counts"]["pending"], 0)
+
+    def test_existing_record_is_never_reset_by_unanalyzed_registration(self):
+        path = self._file("existing.txt", "old")
+        self._save_tagged(path, "문서")
+        before = self._analysis_state(path)
+        path.write_text("changed", encoding="utf-8")
+        result = self.core.registry.register_unanalyzed_file(str(path))
+        self.assertTrue(result["success"])
+        self.assertTrue(result["existing"])
+        self.assertEqual(self._analysis_state(path), before)
 
 
 if __name__ == "__main__":

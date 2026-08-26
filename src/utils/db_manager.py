@@ -580,21 +580,17 @@ class FileRegistryManager:
             file_name = os.path.basename(file_path)
             source_path = os.path.dirname(file_path)
             existing = conn.execute(
-                "SELECT file_size, file_mtime_ns, tags FROM files WHERE file_path = ?",
+                "SELECT id FROM files WHERE file_path = ?",
                 (file_path,),
             ).fetchone()
-            unchanged_tagged = bool(
-                existing
-                and existing[0] == stat.st_size
-                and existing[1] == stat.st_mtime_ns
-                and (existing[2] or "").strip()
-            )
-            if unchanged_tagged:
-                result.update(success=True, reused=True)
+            if existing:
+                # Existing rows represent the last successful analysis state.
+                # Discovery must not erase metadata or advance its fingerprint.
+                result.update(success=True, existing=True)
                 return result
 
             conn.execute("BEGIN IMMEDIATE")
-            conn.execute(
+            cursor = conn.execute(
                 """
                 INSERT INTO files (
                     file_name, display_name, file_path, ai_comment, category,
@@ -602,18 +598,7 @@ class FileRegistryManager:
                     file_created_at, file_modified_at, tags, source_path,
                     file_mtime_ns
                 ) VALUES (?, ?, ?, '', '', ?, ?, ?, ?, ?, ?, '', ?, ?)
-                ON CONFLICT(file_path) DO UPDATE SET
-                    file_name = excluded.file_name,
-                    display_name = excluded.display_name,
-                    ai_comment = '',
-                    category = '',
-                    file_hash = excluded.file_hash,
-                    file_size = excluded.file_size,
-                    updated_at = excluded.updated_at,
-                    file_modified_at = excluded.file_modified_at,
-                    tags = '',
-                    source_path = excluded.source_path,
-                    file_mtime_ns = excluded.file_mtime_ns
+                ON CONFLICT(file_path) DO NOTHING
                 """,
                 (
                     file_name, os.path.splitext(file_name)[0], file_path,
@@ -623,6 +608,10 @@ class FileRegistryManager:
                     source_path, stat.st_mtime_ns,
                 ),
             )
+            if cursor.rowcount == 0:
+                conn.commit()
+                result.update(success=True, existing=True)
+                return result
             conn.execute(
                 """
                 INSERT INTO file_fingerprint_cache
@@ -637,7 +626,7 @@ class FileRegistryManager:
                 (file_path, file_hash, stat.st_size, stat.st_mtime_ns, now),
             )
             conn.commit()
-            result.update(success=True, reused=False)
+            result.update(success=True, existing=False)
             return result
         except Exception as exc:
             conn.rollback()
