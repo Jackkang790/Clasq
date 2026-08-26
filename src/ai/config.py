@@ -67,8 +67,9 @@ def _find_llama_server() -> str:
     """llama-server.exe 탐색 우선순위.
 
     1. LLAMA_SERVER_EXE 환경변수
-    2. 앱 번들 runtime/llama-server.exe
-    3. 개발 환경 기본값 (C:\\llama-cpp\\bin)
+    2. 앱 번들 / 프로젝트 루트 runtime/llama-server.exe
+    3. 소스 실행 시 dist/Clasq/_internal/runtime/llama-server.exe
+    4. 개발 환경 기본값 (C:\\llama-cpp\\bin)
     """
     env = os.getenv("LLAMA_SERVER_EXE")
     if env:
@@ -76,6 +77,16 @@ def _find_llama_server() -> str:
     bundled = os.path.join(_runtime_dir(), "llama-server.exe")
     if os.path.isfile(bundled):
         return bundled
+    # 소스 실행 시 dist 번들에서 탐색
+    if not getattr(__import__("sys"), "frozen", False):
+        here = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.normpath(os.path.join(here, "..", ".."))
+        for candidate in [
+            os.path.join(project_root, "dist", "Clasq", "_internal", "runtime", "llama-server.exe"),
+            os.path.join(project_root, "dist", "Clasq", "runtime", "llama-server.exe"),
+        ]:
+            if os.path.isfile(candidate):
+                return candidate
     return r"C:\llama-cpp\bin\llama-server.exe"
 
 
