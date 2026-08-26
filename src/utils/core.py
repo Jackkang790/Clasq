@@ -538,8 +538,13 @@ def _norm(path: str) -> str:
     return os.path.normcase(os.path.abspath(os.path.normpath(path)))
 
 
-def _has_analysis(ai_comment: str, category: str) -> bool:
-    return bool((ai_comment or "").strip() or (category or "").strip())
+def _has_analysis(ai_comment: str, category: str, tags: str = "") -> bool:
+    """A persisted user/AI tag is itself a reusable organization result."""
+    return bool(
+        (ai_comment or "").strip()
+        or (category or "").strip()
+        or (tags or "").strip()
+    )
 
 
 def scan_directory_files_flat(
@@ -617,7 +622,7 @@ def build_incremental_analysis_plan(
     conn = _sqlite3.connect(db_path, timeout=30)
     try:
         rows = conn.execute(
-            "SELECT file_path, file_hash, file_size, file_mtime_ns, ai_comment, category "
+            "SELECT file_path, file_hash, file_size, file_mtime_ns, ai_comment, category, tags "
             "FROM files"
         ).fetchall()
         try:
@@ -632,12 +637,12 @@ def build_incremental_analysis_plan(
 
     by_path: dict = {}
     analyzed_by_hash: dict = _defaultdict(list)
-    for file_path, file_hash, file_size, file_mtime_ns, ai_comment, category in rows:
+    for file_path, file_hash, file_size, file_mtime_ns, ai_comment, category, tags in rows:
         record = {
             "file_path": file_path, "file_hash": file_hash or "",
             "file_size": file_size, "file_mtime_ns": file_mtime_ns,
             "ai_comment": ai_comment or "", "category": category or "",
-            "analyzed": _has_analysis(ai_comment, category), "source": "files",
+            "analyzed": _has_analysis(ai_comment, category, tags), "source": "files",
         }
         by_path[_norm(file_path)] = record
         if record["file_hash"] and record["analyzed"]:

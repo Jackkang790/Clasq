@@ -9,9 +9,62 @@ from .config import SUPPORTED_EXTENSIONS
 log = logging.getLogger(__name__)
 
 
+def estimate_analysis_eta(file_count: int, seconds_per_file: float | None = None) -> str:
+    """Return a deliberately coarse Korean ETA rather than false precision."""
+    if file_count <= 0:
+        return "추가 분석 없음"
+    if seconds_per_file and seconds_per_file > 0:
+        low = file_count * seconds_per_file * 0.8
+        high = file_count * seconds_per_file * 1.2
+    else:
+        # Until this session has observations, use a broad local-AI range.
+        low = file_count * 5.0
+        high = file_count * 15.0
+
+    def readable(seconds: float) -> str:
+        if seconds < 60:
+            return f"{max(10, int(round(seconds / 10) * 10))}초"
+        minutes = max(1, int(round(seconds / 60)))
+        return f"{minutes}분"
+
+    return f"약 {readable(low)}~{readable(high)}"
+
+
+class IncrementalInventoryWorker(QThread):
+    """Fast stat/fingerprint inventory without AI or text-index synchronization."""
+
+    progress = Signal(str)
+    completed = Signal(object)
+    error = Signal(str)
+
+    def __init__(self, folder_paths=None, db_path="file_manager.db", file_paths=None, parent=None):
+        super().__init__(parent)
+        self.folder_paths = list(folder_paths or [])
+        self.db_path = db_path
+        self.file_paths = list(file_paths) if file_paths is not None else None
+
+    def run(self):
+        try:
+            from .core import build_incremental_analysis_plan, scan_directory_files_flat
+            if self.file_paths is None:
+                files = []
+                self.progress.emit("지원 파일 목록을 확인하고 있습니다...")
+                for folder in self.folder_paths:
+                    files.extend(scan_directory_files_flat(folder))
+                files = sorted(set(files), key=str.casefold)
+            else:
+                files = list(dict.fromkeys(self.file_paths))
+            self.progress.emit(f"{len(files):,}개 파일의 변경 여부를 확인하고 있습니다...")
+            self.completed.emit(build_incremental_analysis_plan(files, self.db_path))
+        except Exception as exc:
+            log.exception("incremental inventory failed")
+            self.error.emit(f"파일 변경 확인 중 오류가 발생했습니다: {exc}")
+
+
 class FolderScanAndTagWorker(QThread):
     progress = Signal(str)
     fileProgress = Signal(int, int, str)  # 처리 순번, 전체 개수, 현재 파일명
+    fileCompleted = Signal(int, int, str)  # 완료 순번, 전체 개수, 완료 파일명
     taggingFinished = Signal()
     finished = Signal(dict)
     error = Signal(str)
@@ -62,9 +115,23 @@ class FolderScanAndTagWorker(QThread):
                         failures.append({"file_path": file_path, "reason": result.get("error") or result.get("message", "분석 실패")})
                 except Exception as exc:
                     failures.append({"file_path": file_path, "reason": str(exc)})
+                finally:
+                    self.fileCompleted.emit(idx, total_count, file_name)
+
+            # Keep Search/index state current, but only for this incremental
+            # batch.  Unchanged files are intentionally not re-extracted.
+            index_stats = {}
+            try:
+                from .local_text_index import LocalTextIndexer
+                from .search_snapshot import refresh_search_snapshot
+                self.progress.emit("분석한 파일의 검색 인덱스를 갱신하고 있습니다...")
+                index_stats = LocalTextIndexer(self.core.db_path).synchronize(files_to_process)
+                refresh_search_snapshot(self.core.db_path)
+            except Exception as exc:
+                log.warning("incremental post-tag index refresh failed: %s", exc)
 
             summary = {"total": total_count, "success": succeeded, "failed": failures,
-                       "results": results}
+                       "results": results, "text_index": index_stats}
             self.taggingFinished.emit()  # 기존 UI 연결 호환성
             self.finished.emit(summary)
             log.info(
