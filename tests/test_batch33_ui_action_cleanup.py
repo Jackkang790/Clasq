@@ -56,7 +56,9 @@ class Batch33UiActionCleanupTests(unittest.TestCase):
         self.assertIn("태그부착", button_texts)
         self.assertIn("프리셋 저장하기", button_texts)
         self.assertIn("프리셋 불러오기", button_texts)
-        self.assertIsNone(settings.findChild(QPushButton, "backbtn"))
+        home_button = settings.findChild(QPushButton, "backbtn")
+        self.assertIsNotNone(home_button)
+        self.assertTrue(home_button.toolTip())
 
     def test_removed_search_legacy_helper_stays_absent(self):
         self.assertFalse(hasattr(SearchView, "_add_result_bubble"))
