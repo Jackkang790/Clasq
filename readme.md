@@ -6,8 +6,8 @@ Clasq는 로컬 AI를 이용해 파일을 검색하고, 정리 계획을 미리 
 
 최신 빌드는 GitHub Releases에서 받을 수 있습니다.
 
-- [Clasq v1.2.0 Release 페이지](https://github.com/Jackkang790/Clasq/releases/tag/v1.2.0)
-- [Clasq_Setup_1.2.0.exe 직접 다운로드](https://github.com/Jackkang790/Clasq/releases/download/v1.2.0/Clasq_Setup_1.2.0.exe)
+- [Clasq v1.2.1 Release 페이지](https://github.com/Jackkang790/Clasq/releases/tag/v1.2.1)
+- [Clasq_Setup_1.2.1.exe 직접 다운로드](https://github.com/Jackkang790/Clasq/releases/download/v1.2.1/Clasq_Setup_1.2.1.exe)
 
 설치파일을 다운로드해 실행하면 됩니다. Python, pip, PySide6, Docker, WSL, llama.cpp, FFmpeg는 별도로 설치할 필요가 없습니다.
 
@@ -15,10 +15,10 @@ Clasq는 로컬 AI를 이용해 파일을 검색하고, 정리 계획을 미리 
 
 ## 설치파일 무결성
 
-`Clasq_Setup_1.2.0.exe` SHA-256:
+`Clasq_Setup_1.2.1.exe` SHA-256:
 
 ```text
-6D2416F8BC2DC07CD1398195339A16B6DAA1C7ED5B73709B6C3D46FEB0A194AD
+(빌드 후 갱신 예정)
 ```
 
 ## 지원 환경
@@ -34,6 +34,15 @@ AI 모델은 설치파일에 포함되어 있지 않습니다. 모델이 없는 
 다운로드된 모델은 로컬 캐시에 보관되므로 유효한 캐시가 있으면 다시 다운로드하지 않습니다.
 중단된 다운로드는 `.part` 파일에서 안전하게 이어받으며, 완료 크기와 SHA-256 검증을 통과한 파일만 모델로 사용합니다.
 
+## 제거
+
+Windows **설정 → 앱 → 설치된 앱 → Clasq → 제거** 또는 시작 메뉴의 **Clasq 제거**를 사용합니다.
+
+- 기본 제거는 프로그램과 설치 바로가기만 삭제합니다. `%LOCALAPPDATA%\Clasq`의 AI 모델, 설정, 분석 DB, 로그 및 캐시는 재설치를 위해 유지됩니다.
+- 제거 중 완전 삭제를 선택하면 Clasq가 기본 데이터 폴더에 생성한 모델과 사용자 데이터를 함께 삭제합니다.
+- Clasq에 등록한 사진, 영상, 문서 및 작업 폴더의 원본 파일은 기본 제거와 완전 삭제 모두에서 삭제되지 않습니다.
+- `CLASQ_MODEL_CACHE_DIR`로 별도 위치를 지정한 모델 캐시는 안전을 위해 완전 삭제에서도 자동 삭제하지 않습니다.
+
 ## 주요 기능
 
 - 자연어 및 메타데이터 기반 파일 검색, 첨부파일 대화
@@ -42,6 +51,12 @@ AI 모델은 설치파일에 포함되어 있지 않습니다. 모델이 없는 
 - 미분류 파일 수동 태그 지정 (다중 선택, 파일 열기, 삭제)
 - 저장 목록 편집 및 선택 삭제
 - 로컬 Qwen 모델과 앱 소유 llama-server lifecycle
+
+## v1.2.1 변경 사항
+
+- Windows 시작 메뉴에 **Clasq 제거** 항목 추가, 기본 제거와 완전 삭제 선택 지원
+- 기본 제거 시 AI 모델·설정·DB·로그 등 사용자 데이터 보존
+- 사용자 원본 파일 및 외부 `CLASQ_MODEL_CACHE_DIR`은 어떤 제거 방식에서도 삭제하지 않음
 
 ## v1.2.0 변경 사항
 

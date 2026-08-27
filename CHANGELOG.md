@@ -5,6 +5,24 @@
 
 ---
 
+## [1.2.1] - 2026-08-27
+
+### 추가
+- Windows 시작 메뉴에 **Clasq 제거** 항목 추가
+- 제거 시 **기본 제거**와 **완전 삭제** 선택 지원
+
+### 개선
+- 기본 제거: AI 모델, 설정, DB, 로그 등 사용자 데이터 보존
+- `/DELETEUSERDATA` 지정 시에만 `%LOCALAPPDATA%\Clasq` 완전 삭제
+- 사용자 원본 파일 및 외부 `CLASQ_MODEL_CACHE_DIR`은 어떤 제거 방식에서도 자동 삭제하지 않음
+- 실행 중 제거 시 Clasq 프로세스 및 Clasq-owned llama-server lifecycle 처리 보강 (Inno Restart Manager)
+
+### 검증
+- 실제 Inno Setup build/install/uninstall: PASS
+- installer/lifecycle 관련 테스트: 12 passed
+
+---
+
 ## [1.2.0] - 2026-08-27
 
 ### 변경
@@ -73,6 +91,7 @@
 
 ---
 
+[1.2.1]: https://github.com/Jackkang790/Clasq/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/Jackkang790/Clasq/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Jackkang790/Clasq/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Jackkang790/Clasq/releases/tag/v1.0.0

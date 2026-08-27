@@ -16,7 +16,8 @@ class Batch30InstallerSourceTests(unittest.TestCase):
         cls.source = ISS.read_text(encoding="utf-8")
 
     def test_stable_identity_and_per_user_install_policy(self):
-        self.assertIn("AppId={{21E38F55-7A79-49A4-84E6-1F6E41F922E2}", self.source)
+        self.assertIn('#define MyAppId "{{21E38F55-7A79-49A4-84E6-1F6E41F922E2}"', self.source)
+        self.assertIn("AppId={#MyAppId}", self.source)
         self.assertIn("DefaultDirName={localappdata}\\Programs\\Clasq", self.source)
         self.assertIn("PrivilegesRequired=lowest", self.source)
         self.assertIn("ArchitecturesAllowed=x64compatible", self.source)
@@ -40,6 +41,20 @@ class Batch30InstallerSourceTests(unittest.TestCase):
         uninstall = self.source.split("[UninstallDelete]", 1)[1]
         self.assertNotRegex(uninstall, r"(?i)(models|file_manager\.db|settings|logs).*Type:")
         self.assertIn("intentionally survive uninstall", uninstall)
+
+    def test_standard_uninstaller_registration_and_start_menu_entry(self):
+        self.assertIn("Uninstallable=yes", self.source)
+        self.assertIn("CreateUninstallRegKey=yes", self.source)
+        self.assertIn("UninstallDisplayName={#MyAppName}", self.source)
+        self.assertIn('Name: "{group}\\Clasq 제거"; Filename: "{uninstallexe}"', self.source)
+
+    def test_full_uninstall_is_explicit_and_bounded_to_clasq_data(self):
+        self.assertIn("DeleteClasqUserData := HasUninstallParameter('/DELETEUSERDATA')", self.source)
+        self.assertIn("MB_YESNOCANCEL or MB_DEFBUTTON2", self.source)
+        self.assertIn('#define UserDataDir "{localappdata}\\Clasq"', self.source)
+        self.assertIn("DelTree(DataPath, True, True, True)", self.source)
+        self.assertIn("Never inspect the database or delete", self.source)
+        self.assertNotIn("managed_paths", self.source)
 
     def test_close_and_signing_policies_remain_explicit(self):
         self.assertIn("CloseApplications=yes", self.source)
