@@ -23,6 +23,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import threading
 from datetime import datetime, timezone
@@ -201,27 +202,73 @@ class ModelDownloader:
 
     def _download_locked(self, filename, url, expected_sha256, expected_size, target) -> bool:
         tmp_path = target.with_name(target.name + ".part")
-        self._cleanup_partial(tmp_path)
         role = self._role(filename)
         if not _is_https_url(url):
             self.error = f"{role} 모델 다운로드는 HTTPS만 허용됩니다."
             return False
-        log.info("model download started role=%s expected_bytes=%d", role, expected_size)
+        existing_size = tmp_path.stat().st_size if tmp_path.exists() else 0
+        if existing_size > expected_size:
+            log.warning("partial exceeds expected size role=%s partial_bytes=%d expected_bytes=%d; resetting",
+                        role, existing_size, expected_size)
+            self._cleanup_partial(tmp_path)
+            existing_size = 0
+        log.info("model download started role=%s model_url=%s expected_bytes=%d existing_partial_bytes=%d resume=%s",
+                 role, _safe_url(url), expected_size, existing_size, bool(existing_size))
         self._emit_status(f"{filename} 다운로드 중...")
         for attempt in range(1, self._max_attempts + 1):
             if self._cancel_event.is_set():
                 self.error = "모델 다운로드가 취소되었습니다."
-                self._cleanup_partial(tmp_path)
                 return False
             try:
-                response = self._request_get(url, stream=True, timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT))
+                existing_size = tmp_path.stat().st_size if tmp_path.exists() else 0
+                request_headers = {"Range": f"bytes={existing_size}-"} if existing_size else {}
+                response = self._request_get(url, stream=True, timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT),
+                                             headers=request_headers)
+                if response.status_code == 416 and existing_size:
+                    log.warning("range rejected role=%s partial_bytes=%d; resetting", role, existing_size)
+                    self._cleanup_partial(tmp_path)
+                    existing_size = 0
+                    request_headers = {}
+                    response = self._request_get(url, stream=True,
+                                                 timeout=(_CONNECT_TIMEOUT, _READ_TIMEOUT), headers={})
                 response.raise_for_status()
                 if not _is_https_url(getattr(response, "url", url)):
                     raise ValueError("insecure redirect")
-                received = 0
+                content_length = _header_int(response.headers, "content-length")
+                content_range_text = response.headers.get("content-range", "")
+                content_range = _parse_content_range(content_range_text)
+                log.info("model response role=%s status=%s final_url=%s content_length=%s content_range=%s "
+                         "accept_ranges=%s range_requested=%s existing_partial_bytes=%d",
+                         role, response.status_code, _safe_url(getattr(response, "url", url)),
+                         content_length, content_range_text or None, response.headers.get("accept-ranges"),
+                         bool(request_headers), existing_size)
+                if existing_size and response.status_code == 206:
+                    if not content_range or content_range[0] != existing_size:
+                        raise ValueError("unexpected content range")
+                    total = content_range[2]
+                    mode = "ab"
+                elif existing_size and response.status_code == 200:
+                    log.warning("server ignored range role=%s; restarting from byte zero", role)
+                    existing_size = 0
+                    total = content_length or expected_size
+                    mode = "wb"
+                else:
+                    existing_size = 0
+                    total = content_range[2] if content_range else (content_length or expected_size)
+                    mode = "wb"
+                if total != expected_size:
+                    log.warning("remote total differs from expected role=%s remote_total_bytes=%d expected_bytes=%d",
+                                role, total, expected_size)
+                    raise ValueError("remote size mismatch")
+                received = existing_size
                 sha = hashlib.sha256()
-                total = int(response.headers.get("content-length", expected_size))
-                with open(tmp_path, "wb") as output:
+                if existing_size:
+                    with open(tmp_path, "rb") as partial:
+                        while chunk := partial.read(_CHUNK_SIZE):
+                            sha.update(chunk)
+                if self._on_progress:
+                    self._on_progress(filename, received, total)
+                with open(tmp_path, mode) as output:
                     for chunk in response.iter_content(chunk_size=_CHUNK_SIZE):
                         if self._cancel_event.is_set():
                             raise DownloadCancelled
@@ -230,9 +277,16 @@ class ModelDownloader:
                         output.write(chunk)
                         sha.update(chunk)
                         received += len(chunk)
+                        if received > total:
+                            log.warning("downloaded exceeds total role=%s downloaded_bytes=%d remote_total_bytes=%d",
+                                        role, received, total)
+                            raise ValueError("download exceeds remote size")
                         if self._on_progress:
                             self._on_progress(filename, received, total)
-                if received != expected_size:
+                final_size = tmp_path.stat().st_size if tmp_path.exists() else 0
+                log.info("model stream ended role=%s downloaded_bytes=%d remote_total_bytes=%d final_local_bytes=%d",
+                         role, received, total, final_size)
+                if final_size <= 0 or received != total or final_size != expected_size:
                     raise ValueError("size mismatch")
                 if sha.hexdigest() != expected_sha256.lower():
                     raise ValueError("hash mismatch")
@@ -242,17 +296,17 @@ class ModelDownloader:
                 return True
             except DownloadCancelled:
                 self.error = "모델 다운로드가 취소되었습니다."
-                self._cleanup_partial(tmp_path)
                 return False
             except requests.HTTPError as exc:
                 status = getattr(getattr(exc, "response", None), "status_code", None)
                 retry = status in _RETRYABLE_STATUS and attempt < self._max_attempts
-                self._cleanup_partial(tmp_path)
                 if not retry:
                     self.error = f"{role} 모델 다운로드에 실패했습니다 (HTTP 오류)."
                     return False
-            except (requests.RequestException, OSError, ValueError):
-                self._cleanup_partial(tmp_path)
+            except (requests.RequestException, OSError, ValueError) as exc:
+                log.warning("model download attempt failed role=%s attempt=%d error=%s partial_bytes=%d",
+                            role, attempt, type(exc).__name__,
+                            tmp_path.stat().st_size if tmp_path.exists() else 0)
                 if attempt >= self._max_attempts:
                     self.error = f"{role} 모델 다운로드 또는 검증에 실패했습니다."
                     return False
@@ -355,3 +409,36 @@ def _is_https_url(url: str) -> bool:
         return urlsplit(url).scheme.lower() == "https"
     except Exception:
         return False
+
+
+def _safe_url(url: str) -> str:
+    """Remove credentials, query parameters, and fragments before logging."""
+    try:
+        parts = urlsplit(url)
+        host = parts.hostname or ""
+        if parts.port:
+            host = f"{host}:{parts.port}"
+        return f"{parts.scheme}://{host}{parts.path}"
+    except Exception:
+        return "<invalid-url>"
+
+
+def _header_int(headers, name: str) -> Optional[int]:
+    try:
+        value = int(headers.get(name, ""))
+        return value if value >= 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+_CONTENT_RANGE_RE = re.compile(r"^bytes\s+(\d+)-(\d+)/(\d+)$", re.IGNORECASE)
+
+
+def _parse_content_range(value: str) -> Optional[tuple[int, int, int]]:
+    match = _CONTENT_RANGE_RE.match((value or "").strip())
+    if not match:
+        return None
+    start, end, total = map(int, match.groups())
+    if start > end or end >= total:
+        return None
+    return start, end, total

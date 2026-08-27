@@ -6,8 +6,8 @@ Clasq는 로컬 AI를 이용해 파일을 검색하고, 정리 계획을 미리 
 
 최신 빌드는 GitHub Releases에서 받을 수 있습니다.
 
-- [Clasq v1.1.0 Release 페이지](https://github.com/Jackkang790/Clasq/releases/tag/v1.1.0)
-- [Clasq_Setup_1.1.0.exe 직접 다운로드](https://github.com/Jackkang790/Clasq/releases/download/v1.1.0/Clasq_Setup_1.1.0.exe)
+- [Clasq v1.2.0 Release 페이지](https://github.com/Jackkang790/Clasq/releases/tag/v1.2.0)
+- [Clasq_Setup_1.2.0.exe 직접 다운로드](https://github.com/Jackkang790/Clasq/releases/download/v1.2.0/Clasq_Setup_1.2.0.exe)
 
 설치파일을 다운로드해 실행하면 됩니다. Python, pip, PySide6, Docker, WSL, llama.cpp, FFmpeg는 별도로 설치할 필요가 없습니다.
 
@@ -15,10 +15,10 @@ Clasq는 로컬 AI를 이용해 파일을 검색하고, 정리 계획을 미리 
 
 ## 설치파일 무결성
 
-`Clasq_Setup_1.1.0.exe` SHA-256:
+`Clasq_Setup_1.2.0.exe` SHA-256:
 
 ```text
-D8279EA76AC2C409CF49DD8FED732782CFF6089FDDCA154D90F05CA10C8A118F
+6D2416F8BC2DC07CD1398195339A16B6DAA1C7ED5B73709B6C3D46FEB0A194AD
 ```
 
 ## 지원 환경
@@ -32,6 +32,7 @@ D8279EA76AC2C409CF49DD8FED732782CFF6089FDDCA154D90F05CA10C8A118F
 AI 모델은 설치파일에 포함되어 있지 않습니다. 모델이 없는 PC에서는 처음 AI 기능을 사용할 때 약 6.2GB 다운로드 안내가 표시되며, 사용자가 동의한 경우에만 다운로드합니다.
 
 다운로드된 모델은 로컬 캐시에 보관되므로 유효한 캐시가 있으면 다시 다운로드하지 않습니다.
+중단된 다운로드는 `.part` 파일에서 안전하게 이어받으며, 완료 크기와 SHA-256 검증을 통과한 파일만 모델로 사용합니다.
 
 ## 주요 기능
 
@@ -41,6 +42,15 @@ AI 모델은 설치파일에 포함되어 있지 않습니다. 모델이 없는 
 - 미분류 파일 수동 태그 지정 (다중 선택, 파일 열기, 삭제)
 - 저장 목록 편집 및 선택 삭제
 - 로컬 Qwen 모델과 앱 소유 llama-server lifecycle
+
+## v1.2.0 변경 사항
+
+- 2GB 이상 모델 다운로드 진행률의 음수/초과 표시 수정
+- HTTP Range와 `Content-Range` 기반 안전한 모델 다운로드 재개
+- 경로 추가 및 파일 변경 확인을 GUI worker에서 실행하고 실제 파일 단위 진행률·취소 지원
+- 신규 폴더는 `size + mtime_ns`로 빠르게 등록하고 SHA-256은 분석·중복 확인 시 지연 계산
+- 2,326개 재현 폴더 기준 UI-ready 약 3.46초 → 0.15초로 단축
+- 권한 오류, 파일 삭제 race, Windows junction/reparse point 방어 강화
 
 ## v1.1.0 변경 사항
 

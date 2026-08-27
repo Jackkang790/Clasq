@@ -364,11 +364,12 @@ def load_llama_with_progress():
         dialog.update_progress(0, 0, status=label)
 
     def on_download_progress(filename, received, total):
-        recv_gb = received / 1024 ** 3
+        safe_received = max(0, min(received, total)) if total else max(0, received)
+        recv_gb = safe_received / 1024 ** 3
         tot_gb  = total   / 1024 ** 3
-        pct     = int(received / total * 100) if total else 0
+        pct     = int(safe_received / total * 100) if total else 0
         dialog.update_progress(
-            received, total,
+            safe_received, total,
             status=f"모델 다운로드 중: {filename}",
             detail=f"{pct}%  {recv_gb:.1f}GB / {tot_gb:.1f}GB",
         )

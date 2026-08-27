@@ -1,5 +1,8 @@
 import os
 import logging
+import hashlib
+import threading
+import time
 from PySide6.QtCore import QThread, Signal
 from ollama_manager import OllamaManager
 from .core import ClasqCore
@@ -32,18 +35,45 @@ class IncrementalInventoryWorker(QThread):
     """Fast stat/fingerprint inventory without AI or text-index synchronization."""
 
     progress = Signal(str)
+    fileProgress = Signal(int, int, str)
     completed = Signal(object)
     error = Signal(str)
+    cancelled = Signal()
 
     def __init__(self, folder_paths=None, db_path="file_manager.db", file_paths=None, parent=None):
         super().__init__(parent)
         self.folder_paths = list(folder_paths or [])
         self.db_path = db_path
         self.file_paths = list(file_paths) if file_paths is not None else None
+        self._stop_requested = False
+        self._last_progress_at = 0.0
+
+    def request_stop(self):
+        self._stop_requested = True
+
+    def _emit_file_progress(self, current, total, file_path):
+        now = time.monotonic()
+        if current in (1, total) or current % 10 == 0 or now - self._last_progress_at >= 0.075:
+            self._last_progress_at = now
+            self.fileProgress.emit(current, total, os.path.basename(file_path))
+
+    def _compute_hash(self, file_path):
+        digest = hashlib.sha256()
+        with open(file_path, "rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                if self._stop_requested:
+                    raise OSError("scan cancelled")
+                digest.update(chunk)
+        return digest.hexdigest()
 
     def run(self):
+        started = time.monotonic()
         try:
             from .core import build_incremental_analysis_plan, scan_directory_files_flat
+            from .db_manager import FileRegistryManager
+            log.info("[FILE_SCAN] start roots=%d explicit_files=%s worker_thread=%s main_thread=%s",
+                     len(self.folder_paths), self.file_paths is not None,
+                     threading.get_ident(), threading.main_thread().ident)
             if self.file_paths is None:
                 files = []
                 self.progress.emit("지원 파일 목록을 확인하고 있습니다...")
@@ -53,7 +83,72 @@ class IncrementalInventoryWorker(QThread):
             else:
                 files = list(dict.fromkeys(self.file_paths))
             self.progress.emit(f"{len(files):,}개 파일의 변경 여부를 확인하고 있습니다...")
-            self.completed.emit(build_incremental_analysis_plan(files, self.db_path))
+            enumeration_duration = time.monotonic() - started
+            if self._stop_requested:
+                self.cancelled.emit()
+                return
+            check_started = time.monotonic()
+            plan = build_incremental_analysis_plan(
+                files, self.db_path,
+                hash_function=self._compute_hash,
+                progress_callback=self._emit_file_progress,
+                cancel_check=lambda: self._stop_requested,
+                defer_hash=True,
+            )
+            check_duration = time.monotonic() - check_started
+            if plan.get("cancelled") or self._stop_requested:
+                log.info("[FILE_SCAN] cancelled processed=%d/%d duration=%.3fs",
+                         len(plan.get("scanned", [])), len(files), time.monotonic() - started)
+                self.cancelled.emit()
+                return
+
+            persist_started = time.monotonic()
+            registry = FileRegistryManager(db_path=self.db_path)
+            failures = []
+            with registry.bulk_session():
+                for item in plan.get("same_content", []):
+                    if self._stop_requested:
+                        self.cancelled.emit()
+                        return
+                    result = registry.register_reused_analysis(
+                        item["file_path"], item["source_file_path"], item["file_hash"]
+                    )
+                    if not result.get("success"):
+                        failures.append(item["file_path"])
+                for item in plan.get("new", []):
+                    if self._stop_requested:
+                        self.cancelled.emit()
+                        return
+                    result = registry.register_unanalyzed_file(item["file_path"], fingerprint=item)
+                    if not result.get("success"):
+                        failures.append(item["file_path"])
+            plan["materialize_failures"] = failures
+            persist_duration = time.monotonic() - persist_started
+            perf = plan.get("performance", {})
+            perf.update({
+                "enumeration_seconds": enumeration_duration,
+                "metadata_check_seconds": check_duration,
+                "db_persist_seconds": persist_duration,
+                "ui_ready_seconds": time.monotonic() - started,
+            })
+            log.info(
+                "[FILE_SCAN] completed files=%d new=%d changed=%d unchanged=%d processed=%d "
+                "stat_only_skip=%d hash_calculated=%d hash_reused=%d hash_deferred=%d bytes_hashed=%d errors=%d "
+                "permission_errors=%d other_errors=%d enumeration=%.3fs metadata_check=%.3fs "
+                "stat=%.3fs hash=%.3fs db_lookup=%.3fs "
+                "cache_persist=%.3fs total=%.3fs cancelled=false",
+                len(files), len(plan.get("new", [])), len(plan.get("changed", [])),
+                len(plan.get("already_analyzed", [])) + len(plan.get("incomplete", [])),
+                len(plan.get("scanned", [])), perf.get("stat_only_skipped", 0),
+                perf.get("sha256_calculated", 0), perf.get("hash_reused", 0),
+                perf.get("hash_deferred", 0), perf.get("bytes_hashed", 0),
+                len(plan.get("errors", [])) + len(failures),
+                perf.get("permission_errors", 0), perf.get("other_errors", 0),
+                enumeration_duration, check_duration, perf.get("stat_seconds", 0.0),
+                perf.get("hash_seconds", 0.0), perf.get("cache_lookup_seconds", 0.0),
+                persist_duration, time.monotonic() - started,
+            )
+            self.completed.emit(plan)
         except Exception as exc:
             log.exception("incremental inventory failed")
             self.error.emit(f"파일 변경 확인 중 오류가 발생했습니다: {exc}")

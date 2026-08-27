@@ -11,6 +11,7 @@ MainWindow의 QStackedWidget에 addWidget(OrganizeView())로 바로 꽂아서 �
 이 파일의 스타일은 objectName 기반 최소한의 폴백 스타일만 넣었습니다.)
 """
 import json
+import logging
 import os
 import time
 from pathlib import Path
@@ -24,6 +25,8 @@ from PySide6.QtWidgets import (
 )
 
 from src.utils.app_paths import assets_dir
+
+log = logging.getLogger(__name__)
 
 PRESET_PATH = Path(assets_dir()) / "preset.json"
 
@@ -705,40 +708,9 @@ class OrganizeView(QWidget):
             QMessageBox.warning(self, "경로 추가 실패", result.get("message", "경로를 추가하지 못했습니다."))
             return
  
-        # 파일 스캔
-        try:
-            scanned_files = self.core.scan_directory_files(path)
- 
-            if not scanned_files:
-                QMessageBox.information(self, "경로 추가됨", 
-                    f"경로가 추가되었지만 지원되는 파일이 없습니다:\n{path}")
-                return
- 
-            # 스캔된 파일들을 테이블에 추가
-            current_rows = self._current_table_rows()
- 
-            # 새로운 파일들 추가
-            for file_info in scanned_files:
-                # 중복 체크
-                if not any(row[2] == file_info["file_path"] for row in current_rows):
-                    tags_str = ", ".join(file_info.get("tags", []))
-                    current_rows.append((
-                        file_info["file_name"],
-                        tags_str,
-                        file_info["file_path"]
-                    ))
- 
-            # 아직 태깅하지 않은 파일은 DB 레코드가 없으므로 이 표에 유지한다.
-            # 태깅 완료 시에만 DB 모델 전체를 다시 읽는다.
-            self._table_screen.set_rows(current_rows)
- 
-            self._start_incremental_inventory(
-                file_paths=[item["file_path"] for item in scanned_files],
-                context="path_add",
-            )
- 
-        except Exception as e:
-            QMessageBox.critical(self, "오류", f"파일 스캔 중 오류가 발생했습니다:\n{str(e)}")
+        # Enumeration, fingerprint checks, hashing, and persistence must stay
+        # outside the GUI thread.
+        self._start_incremental_inventory(folders=[path], context="path_add")
  
     def _start_incremental_inventory(self, *, context, folders=None, file_paths=None):
         if self._inventory_worker and self._inventory_worker.isRunning():
@@ -753,6 +725,7 @@ class OrganizeView(QWidget):
             "기존 분석 결과와 새로 분석할 파일을 구분하고 있습니다.",
             parent=self,
             unit="파일",
+            cancellable=True,
         )
         self._inventory_worker = IncrementalInventoryWorker(
             folder_paths=folders,
@@ -760,9 +733,12 @@ class OrganizeView(QWidget):
             db_path=getattr(self.core, "db_path", "file_manager.db"),
         )
         self._inventory_worker.progress.connect(self._on_plan_progress)
+        self._inventory_worker.fileProgress.connect(self._on_inventory_file_progress)
         self._inventory_worker.completed.connect(self._on_inventory_completed)
         self._inventory_worker.error.connect(self._on_inventory_error)
+        self._inventory_worker.cancelled.connect(self._on_inventory_cancelled)
         self._inventory_worker.finished.connect(self._on_inventory_thread_finished)
+        self._plan_dialog.canceled.connect(self._inventory_worker.request_stop)
         self._inventory_worker.start()
         self._plan_dialog.show()
 
@@ -785,7 +761,6 @@ class OrganizeView(QWidget):
         self._close_plan_dialog()
         context = self._inventory_context
         self._inventory_context = ""
-        self._materialize_inventory_records(plan)
         self._load_files_from_db()
         self._refresh_database_views()
         pending = [item["file_path"] for item in plan.get("pending", [])]
@@ -841,6 +816,19 @@ class OrganizeView(QWidget):
         else:
             QMessageBox.information(self, "파일 자동정리", summary)
         self._on_plan_completed(plan)
+
+    def _on_inventory_file_progress(self, current, total, file_name):
+        if self._plan_dialog:
+            self._plan_dialog.update_progress(
+                current, total, detail=file_name,
+                status="파일 변경 여부를 확인하고 있습니다...",
+            )
+
+    def _on_inventory_cancelled(self):
+        log.info("[FILE_SCAN] UI received cancellation")
+        self._inventory_context = ""
+        self._auto_destination = ""
+        self._close_plan_dialog()
 
     def _on_inventory_error(self, message):
         self._close_plan_dialog()
