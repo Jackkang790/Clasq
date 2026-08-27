@@ -15,6 +15,9 @@ assets/preset.json
 /.tmp/
 /tmp*/
 
+# Isolated test environments (run_fresh_install.ps1 / run_clean_test.ps1)
+/.test_env/
+
 # Build / PyInstaller output
 /.build/
 /build/

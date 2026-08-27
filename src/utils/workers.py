@@ -990,21 +990,28 @@ class OrganizeUndoWorker(QThread):
 
                     undone.append({"moved_path": moved, "original_path": original, "id": rec_id})
 
-                    # 파일을 옮긴 후 빈 폴더 정리 (정리 시 생성된 디렉터리 제거)
-                    moved_dir = os.path.dirname(moved)
-                    while moved_dir and os.path.isdir(moved_dir):
-                        try:
-                            os.rmdir(moved_dir)
-                        except OSError:
-                            break
-                        moved_dir = os.path.dirname(moved_dir)
-
                 except Exception as exc:
                     failed.append({
                         "moved_path": moved, "original_path": original, "id": rec_id,
                         "reason": str(exc),
                     })
                     break
+
+            # ── 빈 폴더 정리 (모든 이동 완료 후) ────────────────────────────
+            # 파일별로 즉시 rmdir하면 같은 폴더의 다른 파일이 남아 있어 실패한다.
+            # 모든 이동이 끝난 뒤 깊은 디렉터리부터 순서대로 시도한다.
+            if undone:
+                dirs_to_clean: set[str] = set()
+                for u in undone:
+                    d = os.path.dirname(u["moved_path"])
+                    while d and os.path.dirname(d) != d:
+                        dirs_to_clean.add(d)
+                        d = os.path.dirname(d)
+                for d in sorted(dirs_to_clean, key=lambda x: x.count(os.sep), reverse=True):
+                    try:
+                        os.rmdir(d)
+                    except OSError:
+                        pass  # 비어있지 않거나 잠김 — 정상적으로 건너뜀
 
             # ── Rollback (부분 실패 시) ──────────────────────────────────────
             rolled_back: list[dict] = []

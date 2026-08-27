@@ -104,9 +104,9 @@ class _FileIconCard(QFrame):
     def __init__(self, kind="default", label="", parent=None):
         super().__init__(parent)
         self.setObjectName("fileIconCard")
-        self.setFixedSize(72, 78)
+        self.setFixedSize(72, 88)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(4, 8, 4, 4)
+        lay.setContentsMargins(4, 8, 4, 8)
         lay.setSpacing(4)
 
         glyph = QLabel(ICON_GLYPH.get(kind, ICON_GLYPH["default"]))
@@ -238,7 +238,7 @@ class _HistoryDialog(QDialog):
                 btn.clicked.connect(lambda checked, o=oid: self._request_undo(o))
                 container = QWidget()
                 cl = QHBoxLayout(container)
-                cl.setContentsMargins(8, 8, 8, 8)
+                cl.setContentsMargins(6, 4, 6, 4)
                 cl.addWidget(btn)
                 table.setCellWidget(row, 3, container)
             else:
@@ -1099,7 +1099,13 @@ class OrganizeView(QWidget):
 
         self._preview_move_plan = move_plan
         self._preview_conflicts = conflicts
-        groups_ui = [(tag, files[:10]) for tag, files in groups_by_tag.items()]
+        # 이동 가능한 파일이 없는 그룹(모두 충돌)은 표시에서 제외한다.
+        movable_tags = {os.path.basename(os.path.dirname(item["target_path"])) for item in move_plan}
+        groups_ui = [
+            (tag, files[:10])
+            for tag, files in groups_by_tag.items()
+            if tag in movable_tags
+        ]
 
         if untagged:
             banner_text = (

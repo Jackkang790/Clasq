@@ -82,7 +82,7 @@ class SavedView(QWidget):
 
         self.table = QTableWidget()
         self.table.setColumnCount(4)
-        self.table.setHorizontalHeaderLabels(["파일명", "태그", "파일 경로", ""])
+        self.table.setHorizontalHeaderLabels(["파일명", "태그", "파일 경로", "삭제"])
         self.table.setEditTriggers(QAbstractItemView.DoubleClicked)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
@@ -100,7 +100,7 @@ class SavedView(QWidget):
         # 각 열의 기본 최소 너비 설정
         self.table.setColumnWidth(0, 180)
         self.table.setColumnWidth(1, 140)
-        self.table.setColumnWidth(3, 90)
+        self.table.setColumnWidth(3, 110)
 
         self.table.setStyleSheet("""
             QTableWidget {
