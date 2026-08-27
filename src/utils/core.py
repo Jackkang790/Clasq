@@ -6,6 +6,7 @@ import os
 import shutil
 import re
 import sqlite3
+import time
 from typing import Dict, Any, List
 
 from .file_pipeline import TextExtractor, FileAnalyzer, ExtensionTagger
@@ -590,6 +591,9 @@ def build_incremental_analysis_plan(
     file_paths: _Iterable[str],
     db_path: str = "file_manager.db",
     hash_function=None,
+    progress_callback=None,
+    cancel_check=None,
+    defer_hash=False,
 ) -> dict:
     """stat 지문 기반으로 파일을 분류해 분석 계획(plan dict)을 반환한다.
 
@@ -619,6 +623,7 @@ def build_incremental_analysis_plan(
             "performance": {},
         }
 
+    cache_started = time.perf_counter()
     conn = _sqlite3.connect(db_path, timeout=30)
     try:
         rows = conn.execute(
@@ -634,6 +639,7 @@ def build_incremental_analysis_plan(
             cached_rows = []
     finally:
         conn.close()
+    cache_lookup_seconds = time.perf_counter() - cache_started
 
     by_path: dict = {}
     analyzed_by_hash: dict = _defaultdict(list)
@@ -662,31 +668,49 @@ def build_incremental_analysis_plan(
     }
     perf = {
         "stat_only_skipped": 0, "sha256_calculated": 0,
-        "hash_backfilled": 0, "changed_candidates": 0, "hash_errors": 0,
+        "hash_backfilled": 0, "hash_reused": 0, "hash_deferred": 0,
+        "changed_candidates": 0, "hash_errors": 0,
+        "permission_errors": 0, "other_errors": 0,
+        "stat_seconds": 0.0, "hash_seconds": 0.0,
+        "bytes_hashed": 0,
+        "cache_lookup_seconds": cache_lookup_seconds,
     }
 
-    for raw_path in file_paths:
+    paths_to_check = list(file_paths)
+    total_paths = len(paths_to_check)
+    for processed, raw_path in enumerate(paths_to_check, start=1):
+        if cancel_check and cancel_check():
+            plan["cancelled"] = True
+            break
         file_path = os.path.abspath(os.path.normpath(raw_path))
+        if progress_callback:
+            progress_callback(processed, total_paths, file_path)
         plan["scanned"].append(file_path)
         try:
+            stat_started = time.perf_counter()
             file_stat = os.stat(file_path)
+            perf["stat_seconds"] += time.perf_counter() - stat_started
         except OSError as exc:
+            perf["stat_seconds"] += time.perf_counter() - stat_started
             plan["errors"].append({"file_path": file_path, "error": str(exc)})
             perf["hash_errors"] += 1
+            perf["permission_errors" if isinstance(exc, PermissionError) else "other_errors"] += 1
             continue
 
         existing = by_path.get(_norm(file_path))
         fp_matches = bool(
-            existing and existing["file_hash"]
+            existing
             and existing["file_size"] == file_stat.st_size
             and existing["file_mtime_ns"] == file_stat.st_mtime_ns
         )
         if fp_matches:
             perf["stat_only_skipped"] += 1
             item = {
-                "file_path": file_path, "file_hash": existing["file_hash"],
+                "file_path": file_path, "file_hash": existing["file_hash"] or None,
                 "file_size": file_stat.st_size, "file_mtime_ns": file_stat.st_mtime_ns,
             }
+            if existing["file_hash"]:
+                perf["hash_reused"] += 1
             if existing["analyzed"]:
                 plan["already_analyzed"].append(item)
             else:
@@ -695,32 +719,37 @@ def build_incremental_analysis_plan(
                 plan["pending"].append(item)
             continue
 
-        if existing is not None:
-            perf["changed_candidates"] += 1
-        try:
-            file_hash = hash_function(file_path)
-            perf["sha256_calculated"] += 1
-        except OSError as exc:
-            plan["errors"].append({"file_path": file_path, "error": str(exc)})
-            perf["hash_errors"] += 1
-            continue
-
         item = {
-            "file_path": file_path, "file_hash": file_hash,
+            "file_path": file_path, "file_hash": None,
             "file_size": file_stat.st_size, "file_mtime_ns": file_stat.st_mtime_ns,
         }
-
-        # 해시 일치 → 내용 동일한 기존 분석 결과 재사용 가능
-        if analyzed_by_hash.get(file_hash):
-            source_record = analyzed_by_hash[file_hash][0]
-            item["source_file_path"] = source_record["file_path"]
-            plan["same_content"].append(item)
-            continue
+        if defer_hash:
+            perf["hash_deferred"] += 1
+        else:
+            try:
+                hash_started = time.perf_counter()
+                file_hash = hash_function(file_path)
+                perf["hash_seconds"] += time.perf_counter() - hash_started
+                perf["sha256_calculated"] += 1
+                perf["bytes_hashed"] += file_stat.st_size
+                item["file_hash"] = file_hash
+            except OSError as exc:
+                perf["hash_seconds"] += time.perf_counter() - hash_started
+                plan["errors"].append({"file_path": file_path, "error": str(exc)})
+                perf["hash_errors"] += 1
+                perf["permission_errors" if isinstance(exc, PermissionError) else "other_errors"] += 1
+                continue
+            if analyzed_by_hash.get(file_hash):
+                source_record = analyzed_by_hash[file_hash][0]
+                item["source_file_path"] = source_record["file_path"]
+                plan["same_content"].append(item)
+                continue
 
         if existing is None:
             item["reason"] = "new"
             plan["new"].append(item)
         else:
+            perf["changed_candidates"] += 1
             item["reason"] = "changed"
             plan["changed"].append(item)
         plan["pending"].append(item)

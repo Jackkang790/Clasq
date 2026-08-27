@@ -33,8 +33,13 @@ class TaskProgressDialog(QProgressDialog):
 
         lines = [self._status_text]
         if total > 0:
-            self.setRange(0, total)
-            self.setValue(current)
+            # QProgressBar is backed by signed 32-bit ints. Normalize large
+            # counters while retaining the original values in the label.
+            safe_current = max(0, min(int(current), int(total)))
+            normalized = max(0, min(1000, int(safe_current * 1000 / total)))
+            current = safe_current
+            self.setRange(0, 1000)
+            self.setValue(normalized)
             lines.append(f"{current} / {total} {self._unit} 처리 중")
         else:
             self.setRange(0, 0)

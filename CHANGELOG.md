@@ -5,6 +5,27 @@
 
 ---
 
+## [1.2.0] - 2026-08-27
+
+### 변경
+- 경로 추가 시 신규 파일 전체 SHA-256 선계산을 제거하고 `size + mtime_ns` 기반 경량 fingerprint로 즉시 등록
+- SHA-256은 AI 분석, 중복 판별 등 정밀 파일 동일성이 필요한 시점에 지연 계산
+- 파일 inventory 등록을 단일 worker transaction으로 묶어 대량 폴더 등록 성능 개선
+- 모델 다운로드 진행 bar를 Qt 32-bit 범위와 무관한 정규화 값으로 표시
+
+### 수정
+- 2GB 이상 모델 다운로드 진행 byte가 음수가 되거나 전체 크기가 32-bit wrap되던 문제
+- resume 응답의 `Content-Length`를 전체 모델 크기로 오인할 수 있던 문제
+- Range 요청을 서버가 무시했을 때 기존 partial 뒤에 전체 파일을 append할 수 있던 문제
+- 2,326개 이상 파일을 확인한 뒤 GUI thread에서 전체 hash와 DB 등록을 반복해 응답 없음이 발생하던 문제
+- 파일 검사 중 권한 오류, 삭제 race, junction 및 취소 처리 보강
+
+### 검증
+- 2,326개 재현 폴더에서 UI-ready 3.463초 → 0.154초, UI-ready 이전 SHA-256 2,326회 → 0회
+- 10,000개 작은 파일 metadata-only 등록 및 5GB sparse file eager-hash 방지 검증
+
+---
+
 ## [1.1.0] - 2026-08-26
 
 ### 추가
@@ -52,5 +73,6 @@
 
 ---
 
+[1.2.0]: https://github.com/Jackkang790/Clasq/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Jackkang790/Clasq/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Jackkang790/Clasq/releases/tag/v1.0.0

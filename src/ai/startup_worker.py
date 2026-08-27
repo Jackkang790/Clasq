@@ -63,7 +63,9 @@ class StartupWorker(QThread):
     # (phase, 사용자에게 표시할 문구)
     phase_changed = Signal(object, str)
     # (파일명, 받은 바이트, 전체 바이트) — 다운로드 진행률
-    progress_changed = Signal(str, int, int)
+    # PySide's ``int`` maps to a signed 32-bit Qt int. Model artifacts exceed
+    # that range, so preserve Python integers across the worker/UI boundary.
+    progress_changed = Signal(str, object, object)
     # (성공 여부, 오류 메시지)
     ready = Signal(bool, str)
 
@@ -141,8 +143,11 @@ class StartupWorker(QThread):
 
         def _on_dl_progress(filename: str, received: int, total: int) -> None:
             self.progress_changed.emit(filename, received, total)
-            pct = int(received / total * 100) if total else 0
-            recv_gb = received / 1024 ** 3
+            safe_received = max(0, min(received, total)) if total else max(0, received)
+            if total and received > total:
+                log.warning("UI received invalid model progress downloaded_bytes=%d total_bytes=%d", received, total)
+            pct = int(safe_received / total * 100) if total else 0
+            recv_gb = safe_received / 1024 ** 3
             tot_gb  = total  / 1024 ** 3
             self._emit(
                 StartupPhase.MODEL_DOWNLOAD,

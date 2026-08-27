@@ -315,6 +315,10 @@ class FileRegistryManager:
         self._bulk_conn = conn
         try:
             yield self
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             conn.close()
             self._bulk_conn = None
@@ -462,7 +466,8 @@ class FileRegistryManager:
         owns_conn = self._bulk_conn is None
 
         try:
-            conn.execute("BEGIN IMMEDIATE")
+            if owns_conn:
+                conn.execute("BEGIN IMMEDIATE")
 
             file_hash = self.compute_file_hash(file_path)
             dup_row = self._find_by_hash(
@@ -557,7 +562,9 @@ class FileRegistryManager:
             if owns_conn:
                 conn.close()
 
-    def register_unanalyzed_file(self, file_path: str) -> Dict[str, Any]:
+    def register_unanalyzed_file(
+        self, file_path: str, fingerprint: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
         """Register a discovered file without inventing AI metadata.
 
         This is deliberately separate from ``save_file_result``: discovery must
@@ -575,7 +582,18 @@ class FileRegistryManager:
         owns_conn = self._bulk_conn is None
         try:
             stat = os.stat(file_path)
-            file_hash = self.compute_file_hash(file_path)
+            fingerprint = fingerprint or {}
+            if (
+                fingerprint.get("file_hash")
+                and fingerprint.get("file_size") == stat.st_size
+                and fingerprint.get("file_mtime_ns") == stat.st_mtime_ns
+            ):
+                file_hash = fingerprint["file_hash"]
+            else:
+                # Folder discovery is metadata-only. SHA-256 is populated by
+                # save_file_result() when analysis/duplicate verification
+                # actually requires precise content identity.
+                file_hash = None
             now = time.strftime("%Y-%m-%d %H:%M:%S")
             file_name = os.path.basename(file_path)
             source_path = os.path.dirname(file_path)
@@ -589,7 +607,8 @@ class FileRegistryManager:
                 result.update(success=True, existing=True)
                 return result
 
-            conn.execute("BEGIN IMMEDIATE")
+            if owns_conn:
+                conn.execute("BEGIN IMMEDIATE")
             cursor = conn.execute(
                 """
                 INSERT INTO files (
@@ -609,27 +628,31 @@ class FileRegistryManager:
                 ),
             )
             if cursor.rowcount == 0:
-                conn.commit()
+                if owns_conn:
+                    conn.commit()
                 result.update(success=True, existing=True)
                 return result
-            conn.execute(
-                """
-                INSERT INTO file_fingerprint_cache
-                    (file_path, file_hash, file_size, file_mtime_ns, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(file_path) DO UPDATE SET
-                    file_hash = excluded.file_hash,
-                    file_size = excluded.file_size,
-                    file_mtime_ns = excluded.file_mtime_ns,
-                    updated_at = excluded.updated_at
-                """,
-                (file_path, file_hash, stat.st_size, stat.st_mtime_ns, now),
-            )
-            conn.commit()
+            if file_hash:
+                conn.execute(
+                    """
+                    INSERT INTO file_fingerprint_cache
+                        (file_path, file_hash, file_size, file_mtime_ns, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(file_path) DO UPDATE SET
+                        file_hash = excluded.file_hash,
+                        file_size = excluded.file_size,
+                        file_mtime_ns = excluded.file_mtime_ns,
+                        updated_at = excluded.updated_at
+                    """,
+                    (file_path, file_hash, stat.st_size, stat.st_mtime_ns, now),
+                )
+            if owns_conn:
+                conn.commit()
             result.update(success=True, existing=False)
             return result
         except Exception as exc:
-            conn.rollback()
+            if owns_conn:
+                conn.rollback()
             result["message"] = f"미태깅 파일 등록 오류: {exc}"
             return result
         finally:
