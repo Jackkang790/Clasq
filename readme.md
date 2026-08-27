@@ -18,7 +18,7 @@ Clasq는 로컬 AI를 이용해 파일을 검색하고, 정리 계획을 미리 
 `Clasq_Setup_1.2.1.exe` SHA-256:
 
 ```text
-(빌드 후 갱신 예정)
+AAC5C61CA60CA08882ED5370C1072076126AD27DBCF6C9FBCF4EF3C058CD1905
 ```
 
 ## 지원 환경
